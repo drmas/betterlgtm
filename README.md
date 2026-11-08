@@ -50,6 +50,12 @@ Download the installer for your platform from [Releases](https://github.com/drma
 | Windows | [`BetterLGTM_0.2.4_x64-setup.exe`](https://github.com/drmas/betterlgtm/releases/download/v0.2.4/BetterLGTM_0.2.4_x64-setup.exe) or [`.msi`](https://github.com/drmas/betterlgtm/releases/download/v0.2.4/BetterLGTM_0.2.4_x64_en-US.msi) |
 | Linux | [`.AppImage`](https://github.com/drmas/betterlgtm/releases/download/v0.2.4/BetterLGTM_0.2.4_amd64.AppImage), [`.deb`](https://github.com/drmas/betterlgtm/releases/download/v0.2.4/BetterLGTM_0.2.4_amd64.deb) or [`.rpm`](https://github.com/drmas/betterlgtm/releases/download/v0.2.4/BetterLGTM-0.2.4-1.x86_64.rpm) |
 
+On macOS you can also install it with [Homebrew](https://brew.sh):
+
+```bash
+brew install --cask drmas/tap/betterlgtm
+```
+
 The macOS app is signed with a Developer ID and notarized by Apple, so it opens like any other Mac app. Windows builds aren't signed yet: if SmartScreen warns about an unknown publisher, choose **More info › Run anyway**.
 
 From version 0.2.1 the app updates itself: when a new release is out, choose **Install update** in the status bar.

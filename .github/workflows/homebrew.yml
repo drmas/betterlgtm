@@ -1,0 +1,61 @@
+name: Homebrew
+
+# Updates the cask in drmas/homebrew-tap to a published release. The Release workflow starts this
+# once a release is published; run it by hand to (re)write the cask for an existing tag.
+# Needs a HOMEBREW_TAP_TOKEN secret with write access to the tap; see docs/HOMEBREW.md.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published tag to point the cask at, for example v0.2.4
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  TAG: ${{ inputs.tag }}
+  TAP: drmas/homebrew-tap
+
+jobs:
+  cask:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check for the tap token
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -z "$HOMEBREW_TAP_TOKEN" ]; then
+            echo "::warning::No HOMEBREW_TAP_TOKEN secret: the Homebrew cask was not updated."
+            echo "SKIP=1" >> "$GITHUB_ENV"
+          fi
+
+      - uses: actions/checkout@v5
+        if: env.SKIP != '1'
+
+      - uses: actions/checkout@v5
+        if: env.SKIP != '1'
+        with:
+          repository: ${{ env.TAP }}
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+
+      - name: Write the cask
+        if: env.SKIP != '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/homebrew-cask.py tap
+
+      - name: Push to the tap
+        if: env.SKIP != '1'
+        working-directory: tap
+        run: |
+          git add Casks/betterlgtm.rb
+          if git diff --cached --quiet; then
+            echo "The cask is already at ${TAG#v}."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "betterlgtm ${TAG#v}"
+          git push

@@ -79,7 +79,7 @@ Maintainers only:
 
 The [Release workflow](.github/workflows/release.yml) builds macOS (Apple silicon and Intel), Windows and Linux installers, attaches them to a GitHub release with those notes, and publishes it once every build succeeds.
 
-macOS builds are signed and notarized when the Apple secrets are set; see [docs/SIGNING.md](docs/SIGNING.md).
+macOS builds are signed and notarized when the Apple secrets are set; see [docs/SIGNING.md](docs/SIGNING.md). Once the release is published, the Homebrew cask is updated to it; see [docs/HOMEBREW.md](docs/HOMEBREW.md).
 
 ## Code of conduct
 

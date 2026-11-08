@@ -206,3 +206,5 @@ jobs:
         run: gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" -F draft=false
       - name: Refresh the website's copy of latest.json
         run: gh workflow run pages.yml -R "$GITHUB_REPOSITORY"
+      - name: Update the Homebrew cask
+        run: gh workflow run homebrew.yml -R "$GITHUB_REPOSITORY" -f tag="$TAG"

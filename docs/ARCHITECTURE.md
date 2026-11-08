@@ -74,4 +74,4 @@ PR descriptions are rendered from GitHub's HTML and sanitized with DOMPurify (al
 
 ## Releases
 
-`.github/workflows/release.yml` runs on version tags. It creates a draft release with the notes from `release-notes/<tag>.md`, builds installers on macOS (arm64 and x64), Windows and Linux with `tauri-action`, uploads them, and publishes the release once every build succeeds.
+`.github/workflows/release.yml` runs on version tags. It creates a draft release with the notes from `release-notes/<tag>.md`, builds installers on macOS (arm64 and x64), Windows and Linux with `tauri-action`, uploads them, and publishes the release once every build succeeds. It then starts `.github/workflows/homebrew.yml`, which points the cask in `drmas/homebrew-tap` at the new release ([HOMEBREW.md](HOMEBREW.md)).

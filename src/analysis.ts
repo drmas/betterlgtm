@@ -18,6 +18,24 @@ export interface Claim {
   finding?: number;
   /** Where the claim comes from when it isn't the description, such as "#311". */
   source?: string;
+  /** The second pass's look at the verdict. `previous` is set when it changed the verdict. */
+  check?: { status: "confirmed" | "changed" | "uncertain"; previous?: Verdict; note: string };
+}
+
+/** A change the description doesn't mention. Not necessarily a problem. */
+export interface Unmentioned {
+  text: string;
+  anchors: Anchor[];
+}
+
+/** A finding the reviewer dismissed on another PR in the same repository, used to quiet the same point here. */
+export interface RepoDismissal {
+  title: string;
+  /** The file it was about, when known. */
+  path?: string;
+  reason?: string;
+  /** The PR it was dismissed on, such as "#481". */
+  pr?: string;
 }
 
 export interface Finding {
@@ -65,6 +83,10 @@ export interface Analysis {
   tests?: TestCheck[];
   /** Findings the second pass disproved, with the reason. Not shown as findings. */
   dropped?: { finding: Finding; note: string }[];
+  /** Changes the description doesn't mention. Missing in analyses from older versions. */
+  unmentioned?: Unmentioned[];
+  /** Dismissals from other PRs in the repository that the analysis was told about. */
+  repoDismissals?: RepoDismissal[];
 }
 
 export interface Risk {
@@ -124,6 +146,7 @@ export const ANALYSIS_SCHEMA = {
       items: { type: "object", properties: { change: TEXT, covered: { enum: ["yes", "partly", "no"] }, tests: LINES, note: TEXT }, required: ["change", "covered"] },
     },
     recommendation: RECOMMENDATION,
+    unmentioned: { type: "array", items: { type: "object", properties: { text: TEXT, anchors: ANCHORS }, required: ["text", "anchors"] } },
     claims: {
       type: "array",
       items: {
@@ -173,6 +196,14 @@ export const VERIFY_SCHEMA = {
       type: "array",
       items: { type: "object", properties: { index: { type: "integer" }, status: { enum: ["confirmed", "refuted", "uncertain"] }, note: TEXT }, required: ["index", "status", "note"] },
     },
+    claims: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: { index: { type: "integer" }, verdict: { enum: ["implemented", "partial", "contradicted", "missing", "uncertain"] }, note: TEXT },
+        required: ["index", "verdict", "note"],
+      },
+    },
     recommendation: RECOMMENDATION,
   },
   required: ["results"],
@@ -212,7 +243,7 @@ export interface AnalysisOptions {
   /** Findings of the previous analysis of this PR. */
   earlier?: EarlierFinding[];
   /** Findings the reviewer dismissed on other PRs in this repository. */
-  dismissedInRepo?: { title: string; reason?: string }[];
+  dismissedInRepo?: RepoDismissal[];
 }
 
 const STATE_NOTE: Record<FindingStateKind, string> = {
@@ -251,8 +282,9 @@ export function buildAnalysisPrompt(pr: PrDetails, o: AnalysisOptions = {}): str
       `\nCheck the code again rather than trusting this list. When a finding of yours is the same problem as one of these, keep its title and set "previous" to its number. Leave out the ones that are fixed. Don't report a dismissed one again unless the code changed in a way that makes it matter.`
     : "";
   const habits = dismissedInRepo.length
-    ? `\n\nOn other pull requests in this repository, the reviewer dismissed these findings. Don't report the same kind of point here unless it is clearly more serious:\n` +
-      dismissedInRepo.map((d) => `- ${oneLine(d.title, 100)}${d.reason ? ` (${oneLine(d.reason, 120)})` : ""}`).join("\n")
+    ? `\n\nOn other pull requests in this repository, the reviewer dismissed these findings:\n` +
+      dismissedInRepo.map((d) => `- ${oneLine(d.title, 100)}${d.path ? ` (in ${d.path})` : ""}${d.reason ? `: ${oneLine(d.reason, 120)}` : ""}`).join("\n") +
+      `\nDon't report the same point in the same file again unless it is clearly more serious here. This covers only that point: report other problems of the same kind, and the same point in other files, as usual.`
     : "";
   const self = o.selfReview
     ? `\n\nThis is the reviewer's own pull request: they wrote it and want to check it before asking others to review. Address them as the author ("you"). In "recommendation", approve means it's ready to ask for reviews, comment means it's worth another look first, and request_changes means fix these before asking anyone.`
@@ -275,8 +307,13 @@ Do this, using only read-only commands:
    review section in CONTRIBUTING.md. If there are any, follow them, and list the files you used in "guidelines".
 1. Split the description into concrete claims. For each, check the code and give a verdict:
    implemented, partial, contradicted (the code does the opposite or breaks the claim), or missing (not in the PR).
+1a. In "unmentioned", list what the PR changes that the description doesn't mention: a refactor, a changed default,
+   leftover debug code, a new dependency, a file outside the stated scope. One line each, with its location. Being on
+   this list doesn't make a change a problem. Leave out formatting, renames within the changed lines, generated files
+   and anything a claim already covers. If the description is empty, leave the list empty.
 2. Find the most important things a reviewer should look at: bugs, security problems, behavior changes,
-   missing tests, risky data handling. Also report changes the description doesn't mention (set notInDescription).
+   missing tests, risky data handling. When a finding is about a change the description doesn't mention, set
+   notInDescription (and list the change in "unmentioned" too).
    Rank them by severity: critical, high, medium, low. Skip style nits.
 3. Summarize what the PR does and recommend a decision: approve, comment, or request_changes.
 3a. In "risks", list the sensitive areas the PR touches: authentication or permissions, database migrations or schema,
@@ -292,7 +329,7 @@ The reviewer skims. Be brief and concrete:
 - No filler, no hedging, no repeating the title. Say what breaks and why it matters.
 - Use \`inline code\` for identifiers. No headings, no bold.
 - Limits: title up to 8 words; summary 2–4 bullets; finding body 1–3 bullets; fix one line;
-  claim note one line; recommendation reason one line; risk "why" one line.
+  claim note one line; recommendation reason one line; risk "why" one line; "unmentioned" text one line.
 When a finding's fix is a small, certain change to exactly the lines of its first anchor, add "suggestion":
 the full replacement text for those lines (startLine to endLine of the new file), with the original indentation and
 no diff markers. Leave it out when the fix touches other lines or you aren't sure.
@@ -306,6 +343,7 @@ When you are done, give the result as one JSON object in this shape:
   "risks": [{ "area": "Database migration", "why": "...", "anchors": [{ "path": "db/migrate/x.rb", "startLine": 1, "endLine": 20 }] }],
   "tests": [{ "change": "...", "covered": "yes|partly|no", "tests": ["spec/x_spec.rb"], "note": "..." }],
   "recommendation": { "decision": "approve|comment|request_changes", "reason": "..." },
+  "unmentioned": [{ "text": "...", "anchors": [{ "path": "src/x.ts", "startLine": 10, "endLine": 14 }] }],
   "claims": [{ "text": "...", "verdict": "implemented|partial|contradicted|missing", "note": "...", "finding": 0, "source": "#12 (only for claims from an issue)",
                "anchors": [{ "path": "src/x.ts", "startLine": 10, "endLine": 14 }] }],
   "findings": [{ "severity": "critical|high|medium|low", "category": "Correctness|Security|Behavior change|Tests|Data handling|Performance|Maintainability",
@@ -423,6 +461,9 @@ export function parseAnalysis(answer: unknown): Analysis | null {
           finding: typeof c.finding === "number" ? remap.get(c.finding) : undefined,
         })),
         walkthrough: parseSteps(data.walkthrough),
+        unmentioned: asArray<Unmentioned>(data.unmentioned)
+          .filter((u) => u && typeof u.text === "string" && u.text.trim())
+          .map((u) => ({ text: u.text, anchors: asAnchors(u.anchors) })),
       };
     } catch {
       // not the shape of an analysis: try the next one
@@ -500,24 +541,22 @@ export type VerifyStatus = "confirmed" | "refuted" | "uncertain";
 /** Findings worth a second pass: the ones that would change the reviewer's decision. */
 export const worthVerifying = (f: Finding) => f.severity !== "low";
 
+const where = (anchors: Anchor[]) => anchors.map((x) => `${x.path}:${x.startLine}${x.endLine > x.startLine ? `-${x.endLine}` : ""}`).join(", ") || "no location";
+
 /**
- * Asks a fresh session to try to disprove the findings. It hasn't seen the analysis's reasoning,
- * so it doesn't inherit its mistakes. `indexes` are positions in `a.findings`.
+ * Asks a fresh session to try to disprove the findings and to check the claim verdicts. It hasn't seen
+ * the analysis's reasoning, so it doesn't inherit its mistakes. `indexes` are positions in `a.findings`.
  */
-export function buildVerifyPrompt(pr: PrDetails, a: Analysis, indexes: number[]): string {
+export function buildVerifyPrompt(pr: PrDetails, a: Analysis, indexes: number[], checkClaims = true): string {
   const list = indexes
     .map((i) => {
       const f = a.findings[i];
-      const where = f.anchors.map((x) => `${x.path}:${x.startLine}${x.endLine > x.startLine ? `-${x.endLine}` : ""}`).join(", ") || "no location";
-      return `[${i}] (${f.severity}, ${f.category || "uncategorized"}) ${f.title} — ${where}\n${f.body}${f.fix ? `\nSuggested fix: ${f.fix}` : ""}`;
+      return `[${i}] (${f.severity}, ${f.category || "uncategorized"}) ${f.title} — ${where(f.anchors)}\n${f.body}${f.fix ? `\nSuggested fix: ${f.fix}` : ""}`;
     })
     .join("\n\n");
-  const rec = a.recommendation ? `\n\nThe reviewer's recommendation was "${a.recommendation.decision}" (${a.recommendation.reason}). If the findings you refute change it, give the new one in "recommendation" (approve, comment or request_changes, with a one-line reason). Otherwise leave "recommendation" out.` : "";
-  return `You are double-checking a code review of pull request #${pr.number} "${pr.title}".
-The PR head is checked out in the current directory (detached HEAD). The base branch is origin/${pr.baseRefName}.
-See the change with: git diff origin/${pr.baseRefName}...HEAD
-
-Another reviewer reported the findings below. Assume each one may be wrong and try to disprove it, using only read-only commands:
+  const claims = checkClaims ? a.claims : [];
+  const findingsPart = indexes.length
+    ? `Another reviewer reported the findings below. Assume each one may be wrong and try to disprove it, using only read-only commands:
 - Read the code at the location and around it. Check that the lines say what the finding claims.
 - Follow callers and callees. Look for guards, validation, types, configuration or tests that already handle the case.
 - Check whether the problem already existed before this PR and the PR doesn't touch it.
@@ -528,20 +567,54 @@ Statuses:
 - confirmed: you read the code and the problem is real as described.
 - refuted: the code shows the finding is wrong or already handled. Name the file:line that shows it.
 - uncertain: you can't tell from the code either way.
-Use refuted only when you can point to code that disproves the finding. A real problem you consider minor is still confirmed.${rec}
+Use refuted only when you can point to code that disproves the finding. A real problem you consider minor is still confirmed.`
+    : "";
+  const claimsPart = claims.length
+    ? `The reviewer ${indexes.length ? "also " : ""}checked these claims from the PR description against the code. Check each verdict yourself:
 
-Give the result as this JSON, one entry per finding, and a note of one short sentence saying why:
-{"results": [{"index": 0, "status": "confirmed", "note": "..."}]}`;
+${claims.map((c, i) => `[${i}] "${c.text}" — verdict: ${c.verdict}${c.note ? ` (${c.note.replace(/\s+/g, " ")})` : ""} — ${where(c.anchors)}`).join("\n")}
+
+Verdicts: implemented, partial, contradicted (the code does the opposite or breaks the claim), missing (not in the PR).
+In "claims", give the verdict you find for each one. Keep the reviewer's verdict unless you can point to code that shows a
+different one, and then name that file:line in the note. Use "uncertain" when you can't tell from the code.`
+    : "";
+  const rec = a.recommendation ? `\n\nThe reviewer's recommendation was "${a.recommendation.decision}" (${a.recommendation.reason}). If the findings you refute or the verdicts you change alter it, give the new one in "recommendation" (approve, comment or request_changes, with a one-line reason). Otherwise leave "recommendation" out.` : "";
+  return `You are double-checking a code review of pull request #${pr.number} "${pr.title}".
+The PR head is checked out in the current directory (detached HEAD). The base branch is origin/${pr.baseRefName}.
+See the change with: git diff origin/${pr.baseRefName}...HEAD
+
+${[findingsPart, claimsPart].filter(Boolean).join("\n\n")}${rec}
+
+Give the result as this JSON, one entry per finding and per claim, each with a note of one short sentence saying why:
+{"results": [{"index": 0, "status": "confirmed", "note": "..."}], "claims": [{"index": 0, "verdict": "implemented", "note": "..."}]}`;
 }
 
-export function parseVerify(answer: unknown): { results: Record<number, { status: VerifyStatus; note: string }>; recommendation?: Analysis["recommendation"] } | null {
-  const results = parseResults<VerifyStatus>(answer, ["confirmed", "refuted", "uncertain"]);
-  if (!results) return null;
+export type ClaimCheck = { verdict: Verdict | "uncertain"; note: string };
+
+export function parseVerify(answer: unknown): {
+  results: Record<number, { status: VerifyStatus; note: string }>;
+  claims: Record<number, ClaimCheck>;
+  recommendation?: Analysis["recommendation"];
+} | null {
+  const results = parseResults<VerifyStatus>(answer, ["confirmed", "refuted", "uncertain"]) ?? {};
+  const claims: Record<number, ClaimCheck> = {};
+  for (const data of candidates(answer)) {
+    for (const r of asArray<{ index: unknown; verdict: unknown; note: unknown }>(data.claims)) {
+      if (r && typeof r.index === "number" && ["implemented", "partial", "contradicted", "missing", "uncertain"].includes(r.verdict as string)) {
+        claims[r.index] = { verdict: r.verdict as ClaimCheck["verdict"], note: asText(r.note) };
+      }
+    }
+    if (Object.keys(claims).length) break;
+  }
+  if (!Object.keys(results).length && !Object.keys(claims).length) return null;
   const rec = candidates(answer).map((d) => d.recommendation).find((r) => r && ["approve", "comment", "request_changes"].includes(r.decision));
-  return { results, recommendation: rec ? { decision: rec.decision, reason: String(rec.reason ?? "") } : undefined };
+  return { results, claims, recommendation: rec ? { decision: rec.decision, reason: String(rec.reason ?? "") } : undefined };
 }
 
-/** Applies the second pass: refuted findings move to `dropped`, the others keep the result as `check`. */
+/**
+ * Applies the second pass: refuted findings move to `dropped`, the others keep the result as `check`.
+ * A claim whose verdict the code shows to be wrong takes the new verdict, and keeps the old one in `check`.
+ */
 export function applyVerification(a: Analysis, v: NonNullable<ReturnType<typeof parseVerify>>): Analysis {
   const dropped = a.findings.flatMap((f, i) => (v.results[i]?.status === "refuted" ? [{ finding: f, note: v.results[i].note }] : []));
   const remap = new Map<number, number>();
@@ -552,13 +625,23 @@ export function applyVerification(a: Analysis, v: NonNullable<ReturnType<typeof 
     remap.set(i, findings.length);
     findings.push(r ? { ...f, check: { status: r.status as "confirmed" | "uncertain", note: r.note } } : f);
   });
+  let changed = 0;
+  const claims = a.claims.map((c, i): Claim => {
+    // A claim explained by a dropped finding keeps its verdict but loses the link.
+    const base = { ...c, finding: typeof c.finding === "number" ? remap.get(c.finding) : undefined };
+    const r = v.claims[i];
+    if (!r) return base;
+    if (r.verdict === "uncertain") return { ...base, check: { status: "uncertain", note: r.note } };
+    if (r.verdict === c.verdict) return { ...base, check: { status: "confirmed", note: r.note } };
+    changed++;
+    return { ...base, verdict: r.verdict, check: { status: "changed", previous: c.verdict, note: r.note } };
+  });
   return {
     ...a,
     findings,
     dropped: dropped.length ? dropped : undefined,
-    // A claim explained by a dropped finding keeps its verdict but loses the link.
-    claims: a.claims.map((c) => ({ ...c, finding: typeof c.finding === "number" ? remap.get(c.finding) : undefined })),
-    recommendation: dropped.length && v.recommendation ? v.recommendation : a.recommendation,
+    claims,
+    recommendation: (dropped.length || changed) && v.recommendation ? v.recommendation : a.recommendation,
   };
 }
 

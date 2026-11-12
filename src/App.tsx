@@ -5,7 +5,7 @@ import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { Group, Panel, Separator } from "react-resizable-panels";
 import { parseDiff, type FileData } from "react-diff-view";
 import { api, describeToolUse, errorText, isSampleMode, setSampleMode, type ClaudeEvent, type ToolStatus, type LastReview, type LinkedIssue, type PrDetails, type ReviewRequest, type ReviewThread } from "./api";
-import { ANALYSIS_SCHEMA, RECHECK_SCHEMA, VERIFY_SCHEMA, WALKTHROUGH_SCHEMA, anchorLabel, answerOf, applyVerification, carryFindingIds, findingId, worthVerifying, type EarlierFinding, type Finding, type FindingState, buildAnalysisPrompt, buildDescriptionPrompt, buildReplyPrompt, buildSummaryPrompt, buildRecheckPrompt, buildVerifyPrompt, buildWalkthroughPrompt, parseAnalysis, parseRecheck, parseVerify, parseWalkthrough, type Anchor } from "./analysis";
+import { ANALYSIS_SCHEMA, RECHECK_SCHEMA, VERIFY_SCHEMA, WALKTHROUGH_SCHEMA, anchorLabel, answerOf, applyVerification, carryFindingIds, findingId, worthVerifying, type EarlierFinding, type Finding, type RepoDismissal, type FindingState, buildAnalysisPrompt, buildDescriptionPrompt, buildReplyPrompt, buildSummaryPrompt, buildRecheckPrompt, buildVerifyPrompt, buildWalkthroughPrompt, parseAnalysis, parseRecheck, parseVerify, parseWalkthrough, type Anchor } from "./analysis";
 import type { OutlineKey, RunState } from "./components/AnalysisView";
 import { ClaudePanel, type ChatContext } from "./components/ClaudePanel";
 import type { DiffMode } from "./components/DiffView";
@@ -30,7 +30,8 @@ import { compileGlobs, filePath, ignoreWhitespace } from "./diffUtils";
 import { fileIcon, SEVERITY } from "./icons";
 import { emptySession, flushSessions, useSessions, useStoredState, type ChatItem } from "./sessions";
 import type { SettingsSection } from "./components/Settings";
-import { ownerVisible, useSettings } from "./settings";
+import { applyZoom } from "./platform";
+import { ownerVisible, stepZoom, useSettings } from "./settings";
 import { useUpdater } from "./updates";
 import { LruCache, readInboxCache, writeInboxCache } from "./cache";
 import { waitingSince } from "./risk";
@@ -228,6 +229,7 @@ export default function App() {
     if (settings.theme === "system") delete document.documentElement.dataset.theme;
     else document.documentElement.dataset.theme = settings.theme;
   }, [settings.theme]);
+  useEffect(() => applyZoom(settings.zoom), [settings.zoom]);
 
   const reloadOrgs = useCallback(() => {
     setOrgsError(null);
@@ -517,13 +519,21 @@ export default function App() {
       // What the reviewer already did with findings: on this PR's last analysis, and on the repository's other PRs.
       const before = sessions[k];
       const earlier: EarlierFinding[] = (before?.analysis?.findings ?? []).map((finding) => ({ finding, state: before?.findingStates?.[findingId(finding)] }));
-      const dismissedInRepo = Object.entries(sessions)
+      // Finding ids are "path|title" (see findingId), so the file comes back out of the id.
+      const dismissedInRepo: RepoDismissal[] = Object.entries(sessions)
         .filter(([other]) => other !== k && other.startsWith(`${pr.repository.nameWithOwner}#`))
-        .flatMap(([, s]) => Object.entries(s.findingStates ?? {}))
-        .filter(([, st]) => st.state === "dismissed")
-        .sort((x, y) => y[1].at - x[1].at)
+        .flatMap(([other, s]) => Object.entries(s.findingStates ?? {}).map(([id, st]) => ({ other, id, st })))
+        .filter(({ st }) => st.state === "dismissed")
+        .sort((x, y) => y.st.at - x.st.at)
         .slice(0, 12)
-        .map(([id, st]) => ({ title: id.slice(id.indexOf("|") + 1), reason: st.reason }));
+        .map(({ other, id, st }) => {
+          const bar = id.indexOf("|");
+          return { title: id.slice(bar + 1), path: bar > 0 ? id.slice(0, bar) : undefined, reason: st.reason, pr: other.slice(other.lastIndexOf("#")) };
+        });
+      if (dismissedInRepo.length) {
+        const line = `Using ${dismissedInRepo.length === 1 ? "1 dismissal" : `${dismissedInRepo.length} dismissals`} from other pull requests in this repository`;
+        setRun(k, (r) => ({ ...r, log: [...r.log, line, ...dismissedInRepo.map((d) => `  ${d.pr}: ${d.title}${d.path ? ` (${d.path})` : ""}`)] }));
+      }
       const prompt = buildAnalysisPrompt(details, {
         instructions: [settings.reviewInstructions, settings.repoInstructions[pr.repository.nameWithOwner] ?? ""].filter((x) => x.trim()).join("\n"),
         since: opts.since,
@@ -548,12 +558,14 @@ export default function App() {
         }
       }, { schema: ANALYSIS_SCHEMA, maxBudgetUsd: budget });
       let parsed = parseAnalysis(answer);
-      if (parsed) parsed = carryFindingIds(parsed, earlier.map((x) => x.finding));
+      if (parsed) parsed = { ...carryFindingIds(parsed, earlier.map((x) => x.finding)), repoDismissals: dismissedInRepo.length ? dismissedInRepo : undefined };
 
       // Second pass, in a fresh session so it doesn't inherit the analysis's reasoning. If it fails, the findings stay as they are.
       const toCheck = parsed ? parsed.findings.flatMap((f, i) => (worthVerifying(f) ? [i] : [])) : [];
-      if (parsed && settings.verifyFindings && toCheck.length && left() !== 0) {
-        setRun(k, (r) => ({ ...r, step: "Double-checking the findings…", log: [...r.log, `Double-checking ${toCheck.length === 1 ? "1 finding" : `${toCheck.length} findings`}`] }));
+      const claimCount = parsed?.claims.length ?? 0;
+      if (parsed && settings.verifyFindings && (toCheck.length || claimCount) && left() !== 0) {
+        const what = [toCheck.length && (toCheck.length === 1 ? "1 finding" : `${toCheck.length} findings`), claimCount && (claimCount === 1 ? "1 claim" : `${claimCount} claims`)].filter(Boolean).join(" and ");
+        setRun(k, (r) => ({ ...r, step: "Double-checking the findings…", log: [...r.log, `Double-checking ${what}`] }));
         const verifyId = `verify-${k}-${Date.now()}`;
         runIds.current[k] = verifyId;
         try {
@@ -567,8 +579,11 @@ export default function App() {
             }
           }, { schema: VERIFY_SCHEMA, maxBudgetUsd: left() });
           const verified = parseVerify(verdicts);
-          if (verified) parsed = applyVerification(parsed, verified);
-          else setRun(k, (r) => ({ ...r, log: [...r.log, "The double-check gave no readable result; the findings are unchanged."] }));
+          if (verified) {
+            parsed = applyVerification(parsed, verified);
+            const changed = parsed.claims.filter((c) => c.check?.status === "changed").length;
+            if (changed) setRun(k, (r) => ({ ...r, log: [...r.log, `The double-check changed ${changed === 1 ? "1 claim verdict" : `${changed} claim verdicts`}`] }));
+          } else setRun(k, (r) => ({ ...r, log: [...r.log, "The double-check gave no readable result; the findings and claims are unchanged."] }));
         } catch (e) {
           setRun(k, (r) => ({ ...r, log: [...r.log, `Couldn't double-check the findings: ${errorText(e)}`] }));
         }
@@ -1051,6 +1066,14 @@ export default function App() {
           suggestions: ["Is this a real problem?", "How would you fix it?", "Draft a review comment for this"],
         };
       }
+      const u = k === "u" ? analysis.unmentioned?.[i] : undefined;
+      if (u) {
+        return {
+          label: `Not in description: ${u.text}`,
+          prompt: `The question is about this change, which the PR description doesn't mention: "${u.text}" (${u.anchors.map(anchorLabel).join(", ") || "no location"}).`,
+          suggestions: ["Why might this have changed?", "Is this safe?", "Draft a question for the author"],
+        };
+      }
       const c = k === "c" ? analysis.claims[i] : undefined;
       if (c) {
         return {
@@ -1131,6 +1154,9 @@ export default function App() {
     { id: "theme-system", menu: "View", label: "System theme", checked: settings.theme === "system", run: () => updateSettings({ theme: "system" }), separatorBefore: true },
     { id: "theme-light", menu: "View", label: "Light theme", checked: settings.theme === "light", run: () => updateSettings({ theme: "light" }) },
     { id: "theme-dark", menu: "View", label: "Dark theme", checked: settings.theme === "dark", run: () => updateSettings({ theme: "dark" }) },
+    { id: "zoom-in", menu: "View", label: "Zoom in", keys: { key: "=", ctrl: true }, altKeys: [{ key: "+", ctrl: true, shift: true }, { key: "+", ctrl: true }], run: () => updateSettings({ zoom: stepZoom(settings.zoom, 1) }), separatorBefore: true },
+    { id: "zoom-out", menu: "View", label: "Zoom out", keys: { key: "-", ctrl: true }, run: () => updateSettings({ zoom: stepZoom(settings.zoom, -1) }) },
+    { id: "zoom-reset", menu: "View", label: "Actual size", keys: { key: "0", ctrl: true }, enabled: settings.zoom !== 1, run: () => updateSettings({ zoom: 1 }) },
 
     { id: "analyze", menu: "Review", label: analysis ? "Re-run analysis" : "Start review", enabled: canAnalyze, run: () => { setTab("analysis"); startAnalysis(); } },
     { id: "guide", menu: "Review", label: "Create guided review", enabled: !!(analysis && !analysis.walkthrough && session?.sessionId && !(key && guideRuns[key]?.running)), run: () => { setDiffMode("guided"); setTab("diff"); generateWalkthrough(); } },

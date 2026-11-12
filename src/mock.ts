@@ -170,6 +170,10 @@ const analysis = {
   ],
   summary: ["Adds `Idempotency-Key` support to `POST /v1/charges`", "Caches the first response in Redis for 24 h", "Repeats with the same key get the cached response"],
   recommendation: { decision: "request_changes", reason: "Concurrent retries can still double-charge." },
+  unmentioned: [
+    { text: "Removes the exported `remember()` stub", anchors: [{ path: "src/idempotency/store.ts", startLine: 15, endLine: 18 }] },
+    { text: "Adds `ioredis` 5.4.1 to the lockfile without a `package.json` change", anchors: [{ path: "package-lock.json", startLine: 123, endLine: 129 }] },
+  ],
   claims: [
     { text: "Accepts an Idempotency-Key header on charge requests.", verdict: "implemented", anchors: [{ path: "src/http/charges.ts", startLine: 39, endLine: 43 }] },
     { text: "Keys are stored in Redis for 24 hours.", verdict: "partial", note: "The TTL is 24 hours, but keys are shared across merchants.", finding: 1, anchors: [{ path: "src/idempotency/store.ts", startLine: 23, endLine: 24 }] },
@@ -183,12 +187,17 @@ const analysis = {
   ],
 };
 
-/** The second pass: confirms the two real findings and disproves the third. */
+/** The second pass: confirms the two real findings, disproves the third, and confirms the claim verdicts. */
 const verification = {
   results: [
     { index: 0, status: "confirmed", note: "`save()` at src/idempotency/store.ts:21 reads then writes with no lock." },
     { index: 1, status: "confirmed", note: "The Redis key at src/idempotency/store.ts:19 has no merchant ID." },
     { index: 2, status: "refuted", note: "src/http/charges.ts:39 skips the lookup when the header is missing." },
+  ],
+  claims: [
+    { index: 0, verdict: "implemented", note: "src/http/charges.ts:39 reads the header and looks it up." },
+    { index: 1, verdict: "partial", note: "TTL_SECONDS is 24 h, but src/idempotency/store.ts:19 has no merchant in the key." },
+    { index: 2, verdict: "contradicted", note: "save() at src/idempotency/store.ts:21 reads then writes with no lock." },
   ],
 };
 

@@ -2,7 +2,8 @@ import { Building2, CircleCheck, CircleX, Cpu, FolderCog, RefreshCw, SlidersHori
 import { useEffect, useState, type ReactNode } from "react";
 import { api, errorText, type ReviewRequest } from "../api";
 import { HARNESSES, HARNESS_IDS, harnessOf, type HarnessId } from "../harness";
-import { DEFAULT_SETTINGS, type Settings as S } from "../settings";
+import { comboLabel } from "../commands";
+import { DEFAULT_SETTINGS, ZOOM_STEPS, type Settings as S } from "../settings";
 
 export type SettingsSection = "general" | "orgs" | "review" | "claude" | "tools";
 
@@ -27,6 +28,9 @@ const SECTIONS: { id: SettingsSection; label: string; icon: LucideIcon }[] = [
   { id: "claude", label: "Agent", icon: Sparkles },
   { id: "tools", label: "Tools & storage", icon: FolderCog },
 ];
+
+/** How the zoom shortcuts read on this platform: ⌘= and ⌘- on macOS. */
+const zoomKeys = `${comboLabel({ key: "=", ctrl: true })} and ${comboLabel({ key: "-", ctrl: true })}`;
 
 function Row({ label, hint, children }: { label: string; hint?: ReactNode; children: ReactNode }) {
   return (
@@ -207,6 +211,11 @@ export function Settings(p: Props) {
               <Row label="Theme">
                 <Seg label="Theme" value={s.theme} options={[["system", "System"], ["light", "Light"], ["dark", "Dark"]]} onChange={(v) => p.update({ theme: v })} />
               </Row>
+              <Row label="Zoom" hint={`Text and layout size. ${zoomKeys} change it from anywhere`}>
+                <select className="set-input" value={s.zoom} onChange={(e) => p.update({ zoom: Number(e.target.value) })}>
+                  {(ZOOM_STEPS.includes(s.zoom) ? ZOOM_STEPS : [...ZOOM_STEPS, s.zoom].sort((a, b) => a - b)).map((z) => <option key={z} value={z}>{Math.round(z * 100)}%{z === 1 ? " (default)" : ""}</option>)}
+                </select>
+              </Row>
               <Row label="Check for review requests" hint="Also when you press refresh in the inbox">
                 <select className="set-input" value={s.refreshMinutes} onChange={(e) => p.update({ refreshMinutes: Number(e.target.value) })}>
                   {[1, 2, 5, 10, 15, 30, 60].map((m) => <option key={m} value={m}>Every {m} {m === 1 ? "minute" : "minutes"}</option>)}
@@ -283,7 +292,7 @@ export function Settings(p: Props) {
               )}
               <Check
                 label="Double-check findings"
-                hint="A second pass tries to disprove each critical, high and medium finding, and drops the ones the code doesn't support. Analyses take longer and use more tokens."
+                hint="A second pass tries to disprove each critical, high and medium finding, and drops the ones the code doesn't support. It also checks each description claim's verdict and corrects the ones the code contradicts. Analyses take longer and use more tokens."
                 checked={s.verifyFindings}
                 onChange={(v) => p.update({ verifyFindings: v })}
               />

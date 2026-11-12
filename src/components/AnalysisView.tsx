@@ -18,7 +18,7 @@ import { GithubHtml, Markdown } from "./Markdown";
 import { useAgent } from "../harness";
 
 /** s0 = overview, d0 = PR description, c = claim, f = finding. */
-export type OutlineKey = `s${number}` | `d${number}` | `f${number}` | `c${number}` | `t${number}`;
+export type OutlineKey = `s${number}` | `d${number}` | `f${number}` | `c${number}` | `u${number}` | `t${number}`;
 
 export interface RunState {
   running: boolean;
@@ -168,6 +168,10 @@ function ThreadReply(p: {
   );
 }
 
+const unmentionedText = (n: number) => (n === 1 ? "1 change not in the description" : `${n} changes not in the description`);
+
+const VERDICT_WORD: Record<string, string> = { implemented: "implemented", partial: "partly implemented", contradicted: "contradicted", missing: "missing" };
+
 function ago(ts?: number) {
   if (!ts) return "";
   const m = Math.round((Date.now() - ts) / 60000);
@@ -177,6 +181,7 @@ function ago(ts?: number) {
 export function AnalysisView(p: Props) {
   const agent = useAgent().short;
   const [showVerified, setShowVerified] = useState(false);
+  const [showUnmentioned, setShowUnmentioned] = useState(true);
   const [showMinor, setShowMinor] = useState(false);
   const [showDismissed, setShowDismissed] = useState(false);
   const [showResolvedThreads, setShowResolvedThreads] = useState(false);
@@ -263,6 +268,10 @@ export function AnalysisView(p: Props) {
           <Toggle open={showVerified} text={verified.length === 1 ? "1 claim matches the code" : `${verified.length} claims match the code`} onClick={() => setShowVerified(!showVerified)} />
         )}
         {showVerified && verified.map(({ c, i }) => <Row key={i} k={`c${i}`} sub Icon={VERDICT.implemented.icon} tone="tone-ok" text={c.text} meta={String(i + 1)} />)}
+        {(a.unmentioned ?? []).length > 0 && (
+          <Toggle open={showUnmentioned} text={unmentionedText(a.unmentioned!.length)} onClick={() => setShowUnmentioned(!showUnmentioned)} />
+        )}
+        {showUnmentioned && (a.unmentioned ?? []).map((u, i) => <Row key={i} k={`u${i}`} sub Icon={FileX} tone="tone-muted" text={u.text} />)}
 
         <Group title="Findings" meta={crit || high ? [crit && `${crit} critical`, high && `${high} high`].filter(Boolean).join(" · ") : `${a.findings.length}`} />
         {major.map(({ f, i }) => (
@@ -474,6 +483,11 @@ function Overview(p: Props & { analysis: Analysis }) {
 
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
         <span className="stat"><CircleCheck size={13} className={matching === a.claims.length ? "tone-ok" : "tone-high"} />{matching} of {a.claims.length} claims match the code</span>
+        {(a.unmentioned ?? []).length > 0 && (
+          <button type="button" className="stat" onClick={() => p.onSelect("u0")} title="Changes the description doesn't mention. Not necessarily problems.">
+            <FileX size={13} className="tone-muted" />{unmentionedText(a.unmentioned!.length)}
+          </button>
+        )}
         {(["critical", "high", "medium", "low"] as const).map((s) => {
           const n = count(s);
           if (!n) return null;
@@ -490,6 +504,22 @@ function Overview(p: Props & { analysis: Analysis }) {
           <ul style={{ margin: "6px 0 0", paddingLeft: 18, display: "flex", flexDirection: "column", gap: 4 }}>
             {a.dropped.map((d, i) => (
               <li key={i}><span style={{ color: "var(--text)" }}>{d.finding.title}</span>{d.note ? `: ${d.note}` : ""}</li>
+            ))}
+          </ul>
+        </details>
+      )}
+      {a.repoDismissals && a.repoDismissals.length > 0 && (
+        <details className="muted" style={{ fontSize: 12 }}>
+          <summary style={{ cursor: "default" }}>
+            {a.repoDismissals.length === 1 ? "Used 1 dismissal" : `Used ${a.repoDismissals.length} dismissals`} from other pull requests in this repository
+          </summary>
+          <p style={{ margin: "6px 0 0" }}>The same point in the same file isn't reported again unless it's clearly more serious here.</p>
+          <ul style={{ margin: "6px 0 0", paddingLeft: 18, display: "flex", flexDirection: "column", gap: 4 }}>
+            {a.repoDismissals.map((d, i) => (
+              <li key={i}>
+                {d.pr && <span className="mono">{d.pr} </span>}<span style={{ color: "var(--text)" }}>{d.title}</span>
+                {d.path && <span className="mono"> · {d.path.split("/").pop()}</span>}{d.reason ? `: ${d.reason}` : ""}
+              </li>
             ))}
           </ul>
         </details>
@@ -658,6 +688,33 @@ function Detail(p: Props & { analysis: Analysis }) {
     );
   }
 
+  if (kind === "u" && a.unmentioned?.[idx]) {
+    const u = a.unmentioned[idx];
+    const n = a.unmentioned.length;
+    const go = (d: number) => p.onSelect(`u${(idx + d + n) % n}`);
+    return (
+      <>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <span className="sev tone-muted"><FileX size={16} />Not in the description</span>
+          <span style={{ flex: 1 }} />
+          <span className="muted" style={{ fontSize: 12 }}>Change {idx + 1} of {n}</span>
+          <button type="button" className="tb" aria-label="Previous change" onClick={() => go(-1)}><ChevronUp size={16} /></button>
+          <button type="button" className="tb" aria-label="Next change" onClick={() => go(1)}><ChevronDown size={16} /></button>
+        </div>
+        <h2 style={{ margin: 0, fontSize: 18, fontWeight: 600, lineHeight: 1.35 }}>{u.text}</h2>
+        <p className="muted" style={{ margin: 0 }}>The description doesn't mention this change. That doesn't make it a problem: check it's intended.</p>
+        {u.anchors[0] && <Excerpt files={p.files} anchor={u.anchors[0]} onOpen={() => p.onOpenAnchor(u.anchors[0], null)} />}
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          {u.anchors.slice(1).map((an, j) => (
+            <button key={j} type="button" className="flink" title={an.path} onClick={() => p.onOpenAnchor(an, null)}>{anchorLabel(an)}</button>
+          ))}
+          <button type="button" className="btn sm" onClick={() => p.onAsk(`About the change not in the description, "${u.text}": `)}><MessageSquare size={13} />Ask {agent}</button>
+          <button type="button" className="btn sm" onClick={() => p.onSelect("d0")}><FileText size={13} />Read the full description</button>
+        </div>
+      </>
+    );
+  }
+
   if (kind === "c" && a.claims[idx]) {
     const c = a.claims[idx];
     const v = VERDICT[c.verdict] ?? VERDICT.partial;
@@ -667,6 +724,11 @@ function Detail(p: Props & { analysis: Analysis }) {
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <span className={`sev ${v.tone}`}><v.icon size={16} />{v.label}</span>
           {c.source && <span className="tag">From issue {c.source}</span>}
+          {c.check && (
+            <span className={`check-badge ${c.check.status === "confirmed" ? "check-ok" : ""}`} title={c.check.note}>
+              {c.check.status === "confirmed" ? "Double-checked" : c.check.status === "changed" ? "Corrected by double-check" : "Not confirmed"}
+            </span>
+          )}
           <span style={{ flex: 1 }} />
           <span className="muted" style={{ fontSize: 12 }}>Claim {idx + 1} of {a.claims.length}</span>
         </div>
@@ -674,6 +736,16 @@ function Detail(p: Props & { analysis: Analysis }) {
           <span className="section-title">{c.source ? `Issue ${c.source} asks for` : "The description says"}</span>
           <blockquote style={{ margin: "6px 0 0", padding: "6px 12px", borderLeft: "3px solid var(--line)", fontSize: 16, lineHeight: 1.5 }}>{c.text}</blockquote>
         </div>
+        {c.check?.status === "changed" && (
+          <p className="check-note check-muted">
+            <strong>A second pass changed this from {VERDICT_WORD[c.check.previous ?? ""] ?? c.check.previous}:</strong> {c.check.note}
+          </p>
+        )}
+        {c.check?.status === "uncertain" && (
+          <p className="check-note check-muted">
+            <strong>A second pass couldn't confirm this verdict:</strong> {c.check.note || "the code didn't settle it either way."}
+          </p>
+        )}
         {c.note && (
           <div>
             <span className="section-title">What the code does</span>

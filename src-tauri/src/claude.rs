@@ -9,7 +9,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::sync::oneshot;
 
 use crate::config::ConfigState;
-use crate::harness::{Harness, Normalizer, Run};
+use crate::harness::{Normalizer, Run, run_agent};
 
 /// Cancel handles for Claude runs that are still streaming, keyed by run id.
 #[derive(Default)]
@@ -32,23 +32,35 @@ pub async fn claude_run(
     chat: Option<bool>,
     schema: Option<String>,
     max_budget_usd: Option<f64>,
+    harness: Option<String>,
     on_event: Channel<Value>,
 ) -> Result<(), String> {
     let config = config.get();
-    let harness = Harness::from_id(&config.harness);
+    let (harness, overridden) = run_agent(&config.harness, harness.as_deref());
     let name = harness.name();
     let program = config.agent_path(harness);
+    // Codex reads a schema from a file. Removed when the run ends, however it ends.
+    let schema_file = match (harness, overridden, schema.as_deref()) {
+        (crate::harness::Harness::Codex, true, Some(s)) => {
+            let path = schema_file_path(&run_id);
+            std::fs::write(&path, s).map_err(|e| e.to_string())?;
+            Some(TempFile(path))
+        }
+        _ => None,
+    };
     let mut cmd = crate::process::command(&program);
     harness.arguments(
         &mut cmd,
         &Run {
             prompt: &prompt,
-            model: &config.model,
-            effort: &config.effort,
+            // The model and effort settings belong to the configured agent; another agent runs with its own defaults.
+            model: if overridden { "" } else { &config.model },
+            effort: if overridden { "" } else { &config.effort },
             resume: resume.as_deref(),
             chat: chat.unwrap_or(false),
             schema: schema.as_deref(),
             max_budget_usd,
+            schema_file: schema_file.as_ref().map(|f| f.0.as_path()),
         },
     );
     cmd.current_dir(&cwd)
@@ -115,5 +127,34 @@ pub async fn claude_run(
 pub fn claude_cancel(runs: State<'_, Runs>, run_id: String) {
     if let Some(tx) = runs.0.lock().unwrap().remove(&run_id) {
         let _ = tx.send(());
+    }
+}
+
+/// Where a run's schema file goes. Run ids carry the PR key (`owner/repo#12`), so only letters,
+/// digits and dashes are kept: the file must stay directly in the temp folder.
+fn schema_file_path(run_id: &str) -> std::path::PathBuf {
+    let safe: String = run_id.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' }).collect();
+    std::env::temp_dir().join(format!("betterlgtm-schema-{safe}.json"))
+}
+
+/// A file deleted when it goes out of scope.
+struct TempFile(std::path::PathBuf);
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn schema_file_for_a_pr_run_id_stays_in_the_temp_dir() {
+        let path = schema_file_path("verify-owner/repo#123-1731400000000");
+        assert_eq!(path.parent(), Some(std::env::temp_dir().as_path()));
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(!name.contains('/') && !name.contains('#'), "{name}");
     }
 }

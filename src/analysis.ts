@@ -209,6 +209,32 @@ export const VERIFY_SCHEMA = {
   required: ["results"],
 };
 
+/**
+ * VERIFY_SCHEMA in the strict form Codex's --output-schema needs: every object lists all its properties
+ * as required and allows no others, so the optional ones may be null instead of absent.
+ */
+export const VERIFY_SCHEMA_STRICT = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    results: {
+      type: "array",
+      items: { type: "object", additionalProperties: false, properties: { index: { type: "integer" }, status: { enum: ["confirmed", "refuted", "uncertain"] }, note: TEXT }, required: ["index", "status", "note"] },
+    },
+    claims: {
+      type: ["array", "null"],
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: { index: { type: "integer" }, verdict: { enum: ["implemented", "partial", "contradicted", "missing", "uncertain"] }, note: TEXT },
+        required: ["index", "verdict", "note"],
+      },
+    },
+    recommendation: { ...RECOMMENDATION, type: ["object", "null"], additionalProperties: false },
+  },
+  required: ["results", "claims", "recommendation"],
+};
+
 /** Asks the analysis session to group the PR's changes into guided review steps. */
 export function buildWalkthroughPrompt(generatedPatterns: string[] = []): string {
   return `${WALKTHROUGH_RULES}${generatedNote(generatedPatterns)}

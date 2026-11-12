@@ -5,13 +5,13 @@ import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { Group, Panel, Separator } from "react-resizable-panels";
 import { parseDiff, type FileData } from "react-diff-view";
 import { api, describeToolUse, errorText, isSampleMode, setSampleMode, type ClaudeEvent, type ToolStatus, type LastReview, type LinkedIssue, type PrDetails, type ReviewRequest, type ReviewThread } from "./api";
-import { ANALYSIS_SCHEMA, RECHECK_SCHEMA, VERIFY_SCHEMA, WALKTHROUGH_SCHEMA, anchorLabel, answerOf, applyVerification, carryFindingIds, findingId, worthVerifying, type EarlierFinding, type Finding, type RepoDismissal, type FindingState, buildAnalysisPrompt, buildDescriptionPrompt, buildReplyPrompt, buildSummaryPrompt, buildRecheckPrompt, buildVerifyPrompt, buildWalkthroughPrompt, parseAnalysis, parseRecheck, parseVerify, parseWalkthrough, type Anchor } from "./analysis";
+import { ANALYSIS_SCHEMA, RECHECK_SCHEMA, VERIFY_SCHEMA, VERIFY_SCHEMA_STRICT, WALKTHROUGH_SCHEMA, anchorLabel, answerOf, applyVerification, carryFindingIds, findingId, worthVerifying, type EarlierFinding, type Finding, type RepoDismissal, type FindingState, buildAnalysisPrompt, buildDescriptionPrompt, buildReplyPrompt, buildSummaryPrompt, buildRecheckPrompt, buildVerifyPrompt, buildWalkthroughPrompt, parseAnalysis, parseRecheck, parseVerify, parseWalkthrough, type Anchor } from "./analysis";
 import type { OutlineKey, RunState } from "./components/AnalysisView";
 import { ClaudePanel, type ChatContext } from "./components/ClaudePanel";
 import type { DiffMode } from "./components/DiffView";
 import { AnalysisView, CommandPalette, DescriptionDialog, DiffView, FilterDialog, GuidedReview, InfoDialog, Onboarding, preloadViews, Settings, SubmitReview, WhatsNew } from "./lazy";
 import { appVersion, hasNotes, versionToAnnounce } from "./whatsNew";
-import { AgentContext, harnessOf } from "./harness";
+import { AgentContext, HARNESSES, crossAgentOf, harnessOf } from "./harness";
 import { setupBroken } from "./setup";
 import { Inbox, InboxRail, prKey, type InboxView } from "./components/Inbox";
 import { Toolbar } from "./components/Toolbar";
@@ -563,7 +563,9 @@ export default function App() {
       const claimCount = parsed?.claims.length ?? 0;
       if (parsed && settings.verifyFindings && (toCheck.length || claimCount) && left() !== 0) {
         const what = [toCheck.length && (toCheck.length === 1 ? "1 finding" : `${toCheck.length} findings`), claimCount && (claimCount === 1 ? "1 claim" : `${claimCount} claims`)].filter(Boolean).join(" and ");
-        setRun(k, (r) => ({ ...r, step: "Double-checking the findings…", log: [...r.log, `Double-checking ${what}`] }));
+        const crossAgent = crossAgentOf(settings.verifyWith, harnessOf(settings).id);
+        const by = crossAgent ? ` with ${HARNESSES[crossAgent].short}` : "";
+        setRun(k, (r) => ({ ...r, step: `Double-checking the findings${by}…`, log: [...r.log, `Double-checking ${what}${by}`] }));
         const verifyId = `verify-${k}-${Date.now()}`;
         runIds.current[k] = verifyId;
         try {
@@ -575,7 +577,7 @@ export default function App() {
               tokens += tokensOf(e);
               cost += e.total_cost_usd ?? 0;
             }
-          }, { schema: VERIFY_SCHEMA, maxBudgetUsd: left() });
+          }, { schema: crossAgent === "codex" ? VERIFY_SCHEMA_STRICT : VERIFY_SCHEMA, maxBudgetUsd: left(), harness: crossAgent });
           const verified = parseVerify(verdicts);
           if (verified) {
             parsed = applyVerification(parsed, verified);

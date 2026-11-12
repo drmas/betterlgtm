@@ -1,4 +1,5 @@
 import { Channel, invoke as tauriInvoke } from "@tauri-apps/api/core";
+import type { HarnessId } from "./harness";
 import { inTauri, mockInvoke } from "./mock";
 
 // Outside Tauri (browser preview during development, or a VITE_MOCK=1 build) the backend is replaced by sample data.
@@ -163,6 +164,8 @@ export interface ClaudeRunOptions {
   schema?: object;
   /** Stops the run when it has cost this much. */
   maxBudgetUsd?: number;
+  /** Run this one call on another agent than the configured one, with that agent's own model and effort. */
+  harness?: HarnessId;
 }
 
 export const api = {
@@ -205,6 +208,7 @@ export const api = {
         chat: !!opts.chat,
         schema: schema ? JSON.stringify(schema) : null,
         maxBudgetUsd: opts.maxBudgetUsd && opts.maxBudgetUsd > 0 ? opts.maxBudgetUsd : null,
+        harness: opts.harness ?? null,
         onEvent: channel,
       });
     };

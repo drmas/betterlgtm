@@ -457,12 +457,17 @@ function RiskAndTests(p: Props & { analysis: Analysis }) {
 function Overview(p: Props & { analysis: Analysis }) {
   const a = p.analysis;
   const problems = a.claims.map((c, i) => ({ c, i })).filter(({ c }) => c.verdict !== "implemented");
+  const settled = (i: number) => p.states?.[i]?.state === "dismissed" || p.states?.[i]?.state === "resolved";
   const major = a.findings
     .map((f, i) => ({ f, i }))
-    .filter(({ f, i }) => (f.severity === "critical" || f.severity === "high") && p.states?.[i]?.state !== "dismissed" && p.states?.[i]?.state !== "resolved");
+    .filter(({ f, i }) => (f.severity === "critical" || f.severity === "high") && !settled(i));
   const count = (s: string) => a.findings.filter((f) => f.severity === s).length;
-  const derived: Decision = major.length || problems.some(({ c }) => c.verdict !== "partial") ? "request_changes" : a.findings.length || problems.length ? "comment" : "approve";
-  const decision = DECISION[a.recommendation?.decision ?? derived];
+  // A claim the analysis explained with a finding stops counting once that finding is settled.
+  const openProblems = problems.filter(({ c }) => c.finding === undefined || !settled(c.finding));
+  const derived: Decision = major.length || openProblems.some(({ c }) => c.verdict !== "partial") ? "request_changes" : a.findings.length || problems.length ? "comment" : "approve";
+  // The saved recommendation is from analysis time. Once its serious findings are settled, it no longer holds.
+  const rec = a.recommendation?.decision === "request_changes" && derived !== "request_changes" ? undefined : a.recommendation;
+  const decision = DECISION[rec?.decision ?? derived];
   const matching = a.claims.length - problems.length;
 
   return (
@@ -471,8 +476,8 @@ function Overview(p: Props & { analysis: Analysis }) {
       <div className={decision.cls}>
         <decision.icon size={20} className={decision.tone} style={{ flexShrink: 0, marginTop: 1 }} />
         <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-          <span style={{ fontSize: 15, fontWeight: 600 }}>{p.ownPr ? SELF_DECISION[a.recommendation?.decision ?? derived] : decision.label}</span>
-          {a.recommendation?.reason && <span style={{ fontSize: 13 }}>{a.recommendation.reason}</span>}
+          <span style={{ fontSize: 15, fontWeight: 600 }}>{p.ownPr ? SELF_DECISION[rec?.decision ?? derived] : decision.label}</span>
+          {rec?.reason && <span style={{ fontSize: 13 }}>{rec.reason}</span>}
         </div>
       </div>
 

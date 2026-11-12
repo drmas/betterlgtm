@@ -266,10 +266,19 @@ export function buildAnalysisPrompt(pr: PrDetails, o: AnalysisOptions = {}): str
     ? `\n\nThe PR says it closes these issues. Turn their concrete requirements into claims as well, check them the same way, and set "source" to the issue number (for example "#${issues[0].number}"):\n` +
       issues.map((i) => `<issue number="${i.number}" title="${i.title.replace(/"/g, "'")}">\n${(i.body ?? "").trim().slice(0, 2000) || "(no description)"}\n</issue>`).join("\n")
     : "";
+  const where = (t: ReviewThread) => `${t.path}${t.line ? `:${t.line}` : ""}`;
   const open = threads.filter((t) => !t.isResolved && t.comments.length);
+  // Replies often say a point is fixed or intended, so the latest ones go in too, not only the first comment.
+  const replies = (t: ReviewThread) =>
+    t.comments.length > 1 ? ` Replies: ${t.comments.slice(1).slice(-3).map((c) => `${c.author}: ${oneLine(c.body, 200)}`).join(" | ")}` : "";
   const discussed = open.length
-    ? `\n\nReviewers have already raised these points on the PR. Don't report them again as findings; only add what they missed:\n` +
-      open.map((t) => `- ${t.path}${t.line ? `:${t.line}` : ""} (${t.comments[0].author}): ${t.comments[0].body.replace(/\s+/g, " ").slice(0, 300)}`).join("\n")
+    ? `\n\nReviewers have already raised these points on the PR. Don't report them again as findings; only add what they missed. Take the replies into account:\n` +
+      open.map((t) => `- ${where(t)} (${t.comments[0].author}): ${oneLine(t.comments[0].body, 300)}${replies(t)}`).join("\n")
+    : "";
+  const resolvedThreads = threads.filter((t) => t.isResolved && t.comments.length);
+  const settled = resolvedThreads.length
+    ? `\n\nThese conversations on the PR are resolved, so the points are settled. Don't report them again unless the code changed in a way that reopens them:\n` +
+      resolvedThreads.map((t) => `- ${where(t)} (${t.comments[0].author}): ${oneLine(t.comments[0].body, 200)}`).join("\n")
     : "";
   const before = earlier.length
     ? `\n\nAn earlier analysis of this PR reported these findings:\n` +
@@ -289,7 +298,7 @@ export function buildAnalysisPrompt(pr: PrDetails, o: AnalysisOptions = {}): str
   const self = o.selfReview
     ? `\n\nThis is the reviewer's own pull request: they wrote it and want to check it before asking others to review. Address them as the author ("you"). In "recommendation", approve means it's ready to ask for reviews, comment means it's worth another look first, and request_changes means fix these before asking anyone.`
     : "";
-  return baseAnalysisPrompt(pr, o.generatedPatterns) + linked + discussed + before + habits + self + focus + extra;
+  return baseAnalysisPrompt(pr, o.generatedPatterns) + linked + discussed + settled + before + habits + self + focus + extra;
 }
 
 function baseAnalysisPrompt(pr: PrDetails, generatedPatterns: string[] = []): string {
@@ -667,6 +676,36 @@ export interface FindingState {
   state: FindingStateKind;
   reason?: string;
   at: number;
+}
+
+/** The review conversation started by posting this finding: same file, and its first comment opens with the finding's title. */
+export function threadOfFinding(f: Finding, threads: ReviewThread[]): ReviewThread | undefined {
+  const path = f.anchors[0]?.path;
+  return threads.find((t) => t.path === path && t.comments[0]?.body.startsWith(`**${f.title}**`));
+}
+
+/**
+ * The finding states to show: the reviewer's own, plus "resolved" for a posted finding whose conversation
+ * was resolved on GitHub. A state the reviewer set (dismissed, resolved) always wins.
+ */
+export function currentStates(findings: Finding[], stored: Record<string, FindingState> | undefined, threads: ReviewThread[]): Record<number, FindingState> {
+  const out: Record<number, FindingState> = {};
+  findings.forEach((f, i) => {
+    const st = stored?.[findingId(f)];
+    if (st && st.state !== "commented") out[i] = st;
+    else if (threadOfFinding(f, threads)?.isResolved) out[i] = { state: "resolved", reason: "Conversation resolved on GitHub", at: st?.at ?? 0 };
+    else if (st) out[i] = st;
+  });
+  return out;
+}
+
+/** For chat: the chat resumes the analysis session, which still sees every finding as open. Says which ones are settled now. */
+export function settledNote(findings: Finding[], states: Record<number, FindingState>): string {
+  const lines = findings.flatMap((f, i) => {
+    const st = states[i];
+    return st && st.state !== "commented" ? [`- ${i + 1}. ${f.title}: ${STATE_NOTE[st.state]}${st.reason ? ` (${oneLine(st.reason, 120)})` : ""}`] : [];
+  });
+  return lines.length ? `Since the analysis, these findings are settled; treat them as settled, not open:\n${lines.join("\n")}\n\n` : "";
 }
 
 /** Identifies a finding across analysis runs: the id carried over from an earlier run, or its first file and its title. */

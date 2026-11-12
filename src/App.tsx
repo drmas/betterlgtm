@@ -5,7 +5,7 @@ import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { Group, Panel, Separator } from "react-resizable-panels";
 import { parseDiff, type FileData } from "react-diff-view";
 import { api, describeToolUse, errorText, isSampleMode, setSampleMode, type ClaudeEvent, type ToolStatus, type LastReview, type LinkedIssue, type PrDetails, type ReviewRequest, type ReviewThread } from "./api";
-import { ANALYSIS_SCHEMA, RECHECK_SCHEMA, VERIFY_SCHEMA, WALKTHROUGH_SCHEMA, anchorLabel, answerOf, applyVerification, carryFindingIds, findingId, worthVerifying, type EarlierFinding, type Finding, type RepoDismissal, type FindingState, buildAnalysisPrompt, buildDescriptionPrompt, buildReplyPrompt, buildSummaryPrompt, buildRecheckPrompt, buildVerifyPrompt, buildWalkthroughPrompt, parseAnalysis, parseRecheck, parseVerify, parseWalkthrough, type Anchor } from "./analysis";
+import { ANALYSIS_SCHEMA, RECHECK_SCHEMA, VERIFY_SCHEMA, WALKTHROUGH_SCHEMA, anchorLabel, answerOf, applyVerification, carryFindingIds, currentStates, findingId, settledNote, worthVerifying, type EarlierFinding, type Finding, type RepoDismissal, type FindingState, buildAnalysisPrompt, buildDescriptionPrompt, buildReplyPrompt, buildSummaryPrompt, buildRecheckPrompt, buildVerifyPrompt, buildWalkthroughPrompt, parseAnalysis, parseRecheck, parseVerify, parseWalkthrough, type Anchor } from "./analysis";
 import type { OutlineKey, RunState } from "./components/AnalysisView";
 import { ClaudePanel, type ChatContext } from "./components/ClaudePanel";
 import type { DiffMode } from "./components/DiffView";
@@ -644,7 +644,7 @@ export default function App() {
     const k = key;
     const push = (item: ChatItem) => update(k, (s) => ({ ...s, chat: [...s.chat, item] }));
     push({ role: "user", text, context: context?.label });
-    const prompt = context ? `${context.prompt}\n\n${text}` : text;
+    const prompt = settledNote(analysis?.findings ?? [], findingStates) + (context ? `${context.prompt}\n\n${text}` : text);
     setChatRunning((c) => ({ ...c, [k]: true }));
     track("chat_sent", { harness: settings.harness, with_context: !!context });
     const runId = `chat-${k}-${Date.now()}`;
@@ -960,14 +960,8 @@ export default function App() {
   const checks = session?.findingChecks && details && session.findingChecks.head === details.headRefOid ? session.findingChecks : undefined;
   const recheck = key ? recheckRuns[key] : undefined;
   /** Finding states for the current analysis, by finding index. */
-  const findingStates = useMemo(() => {
-    const out: Record<number, FindingState> = {};
-    analysis?.findings.forEach((f, i) => {
-      const st = session?.findingStates?.[findingId(f)];
-      if (st) out[i] = st;
-    });
-    return out;
-  }, [analysis, session?.findingStates]);
+  const threadsNow = loaded && loaded.key === key ? loaded.threads : undefined;
+  const findingStates = useMemo(() => currentStates(analysis?.findings ?? [], session?.findingStates, threadsNow ?? []), [analysis, session?.findingStates, threadsNow]);
   const setFindingState = (i: number, st: FindingState | null) => {
     const f = analysis?.findings[i];
     if (!key || !f) return;

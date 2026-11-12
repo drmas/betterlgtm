@@ -120,8 +120,15 @@ pub fn command(program: &str) -> Command {
     }
     #[cfg(unix)]
     cmd.env("PATH", tool_path());
+    // The release build has no console of its own, so without this Windows opens one for every
+    // console program the app starts, and it flashes on screen.
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
     cmd
 }
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// Where a tool's command resolves to: the file itself when given as a path, otherwise the first
 /// match on the PATH the tools run with. `None` when nothing is found.

@@ -106,3 +106,8 @@ export const harnessOf = (s: Pick<Settings, "harness">): HarnessInfo => HARNESSE
 /** The chosen agent for the components under the main window, so their labels can name it. */
 export const AgentContext = createContext<HarnessInfo>(HARNESSES.claude);
 export const useAgent = () => useContext(AgentContext);
+
+/** The agent that double-checks, when it isn't the one running the review. Choosing the main agent counts as "Same agent". */
+export function crossAgentOf(verifyWith: HarnessId | "same", main: HarnessId): HarnessId | undefined {
+  return verifyWith !== "same" && verifyWith !== main ? verifyWith : undefined;
+}

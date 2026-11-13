@@ -1,7 +1,7 @@
 import { Check, ChevronDown, ChevronRight, Columns2, Files, Loader, Rows3, Sparkles } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Decoration, Diff, Hunk, getChangeKey, type FileData, type HunkData, type RenderGutter } from "react-diff-view";
-import type { Anchor, Finding, WalkStep } from "../analysis";
+import { anchorLabel, probeKey, probeOutcome, probeProgress, type Anchor, type Finding, type ProbeAnswer, type WalkStep } from "../analysis";
 import { allReviewed, changesInRange, filePath, fileStats, findFile, hiddenKind, hunkKey, hunksForRanges, type HideRules } from "../diffUtils";
 import { useTokens } from "../highlightAsync";
 import { useElementWidth } from "../hooks";
@@ -21,12 +21,60 @@ interface Props {
   canGenerate: boolean;
   onSplit: (split: boolean) => void;
   onMode: (m: DiffMode) => void;
-  /** Reports the section in view, so the chat context follows the scroll. */
-  onStep: (i: number) => void;
+  /** Reports the section in view, so the chat context follows the scroll. Sections without changes are left out
+   * here, so the index can differ from the walkthrough's: the step itself says which one it is. */
+  onStep: (i: number, step: WalkStep) => void;
   onReviewed: (hunkKeys: string[], reviewed: boolean) => void;
   onGenerate: () => void;
   /** Generated and test files to leave out of the sections and the progress count. */
   hide: HideRules;
+  /** Ask a step's predict-first question before its explanation. */
+  predict: boolean;
+  answers?: Record<string, ProbeAnswer>;
+  onAnswer: (key: string, a: ProbeAnswer) => void;
+  /** Opens the chat, which follows the section in view. */
+  onAsk: () => void;
+  onOpenAnchor: (a: Anchor) => void;
+}
+
+/** A step's predict-first question, then the answer from the code once it's answered or skipped. */
+function ProbeCard({ step, answer, agent, onAnswer, onAsk, onOpenAnchor }: { step: WalkStep; answer?: ProbeAnswer; agent: string; onAnswer: (a: ProbeAnswer) => void; onAsk: () => void; onOpenAnchor: (a: Anchor) => void }) {
+  const probe = step.probe!;
+  const outcome = probeOutcome(probe, answer);
+  // Picking a choice removes the button that had focus; move it to the answer so the keyboard isn't lost.
+  const revealRef = useRef<HTMLDivElement>(null);
+  const before = useRef(outcome);
+  useEffect(() => {
+    if (before.current === "open" && outcome !== "open") revealRef.current?.focus();
+    before.current = outcome;
+  }, [outcome]);
+  const pick = (choice: ProbeAnswer["choice"]) => onAnswer({ choice, at: Date.now() });
+  if (outcome === "open") {
+    return (
+      <div className="probe" role="group" aria-label="Predict before reading">
+        <div className="probe-q">{probe.question}</div>
+        <div className="probe-choices">
+          {probe.choices.map((c, i) => <button key={i} type="button" className="btn" onClick={() => pick(i)}>{c}</button>)}
+          <button type="button" className="btn" onClick={() => pick("unsure")}>Not sure</button>
+        </div>
+        <button type="button" className="btn sm probe-skip" onClick={() => pick("skipped")}>Show me</button>
+      </div>
+    );
+  }
+  const right = probe.choices[probe.answer];
+  const head = outcome === "right" ? <><strong>You were right:</strong> {right}</> : <><strong>The code does:</strong> {right}{outcome === "wrong" && typeof answer?.choice === "number" ? <span className="muted"> (you picked: {probe.choices[answer.choice]})</span> : null}</>;
+  return (
+    <div ref={revealRef} tabIndex={-1} className={`probe probe-${outcome === "right" ? "right" : outcome === "wrong" ? "wrong" : "shown"}`} role="group" aria-label="Answer from the code">
+      <div className="probe-q">{probe.question}</div>
+      <div>{head}</div>
+      {probe.why && <div>{probe.why}</div>}
+      <div className="probe-foot">
+        {probe.evidence && <button type="button" className="flink" title={probe.evidence.path} onClick={() => onOpenAnchor(probe.evidence!)}>{anchorLabel(probe.evidence)}</button>}
+        <span className="muted">Read from the code, not run.</span>
+        {(outcome === "wrong" || outcome === "unsure") && <button type="button" className="btn sm" onClick={onAsk}>Ask {agent} about this</button>}
+      </div>
+    </div>
+  );
 }
 
 interface FilePart {
@@ -151,10 +199,15 @@ export function GuidedReview(p: Props) {
   ].filter(Boolean).join(" and ") + ` ${hidden === 1 ? "file" : "files"} left out`;
   const steps = useMemo(() => (p.steps ? resolveSteps(p.steps, shown) : []), [p.steps, shown]);
   const [active, setActive] = useState(Math.min(p.current, Math.max(steps.length - 1, 0)));
+  // Report the starting section too, not only scrolls and jumps: the chat context reads it before any scroll.
+  useEffect(() => {
+    if (steps[active]) p.onStep(active, steps[active]);
+  }, [steps]);
 
   const stepDone = (s: Step) => allReviewed(s.keys, p.reviewed);
   const partsDone = (s: Step) => s.parts.filter((x) => allReviewed(x.keys, p.reviewed)).length;
   const doneSteps = steps.filter(stepDone).length;
+  const asked = p.predict ? probeProgress(steps, p.answers) : { answered: 0, skipped: 0, total: 0 };
   const allKeys = steps.flatMap((s) => s.keys);
   const pct = allKeys.length ? Math.round((allKeys.filter((k) => p.reviewed.has(k)).length / allKeys.length) * 100) : 0;
 
@@ -162,7 +215,7 @@ export function GuidedReview(p: Props) {
     const el = sections.current[i];
     if (el && scroller.current) scroller.current.scrollTo({ top: el.offsetTop - 8 });
     setActive(i);
-    p.onStep(i);
+    p.onStep(i, steps[i]);
   };
 
   // Scroll spy: the section whose top has passed the top edge is the one being read.
@@ -176,7 +229,7 @@ export function GuidedReview(p: Props) {
     if (sc.scrollTop + sc.clientHeight >= sc.scrollHeight - 4) idx = steps.length - 1;
     if (idx !== active) {
       setActive(idx);
-      p.onStep(idx);
+      p.onStep(idx, steps[idx]);
     }
   };
 
@@ -213,6 +266,11 @@ export function GuidedReview(p: Props) {
         </select>
       ) : (
         <span style={{ flex: 1 }} />
+      )}
+      {narrow && asked.total > 0 && (
+        <span className="muted" style={{ fontSize: 12, whiteSpace: "nowrap" }} title={`${asked.answered} answered, ${asked.skipped} skipped`}>
+          {asked.answered + asked.skipped} of {asked.total} asked
+        </span>
       )}
       {hidden > 0 && !narrow && (
         <span className="muted" style={{ fontSize: 12, whiteSpace: "nowrap" }} title="Generated files and tests are left out, as set in Settings → Review. The Files view shows them.">
@@ -258,7 +316,7 @@ export function GuidedReview(p: Props) {
         <nav aria-label="Review sections" data-pane="outline" className="side" style={{ width: width < 1000 ? 240 : 280, flexShrink: 0, borderRight: "1px solid var(--line)" }}>
           <div style={{ padding: "8px 12px", display: "flex", flexDirection: "column", gap: 6, borderBottom: "1px solid var(--line)" }}>
             <div style={{ display: "flex", fontSize: 12, fontWeight: 600 }} className="muted">
-              <span style={{ flex: 1 }}>{doneSteps} of {steps.length} sections reviewed</span>
+              <span style={{ flex: 1 }}>{doneSteps} of {steps.length} sections reviewed{asked.total ? ` · ${asked.answered} answered, ${asked.skipped} skipped` : ""}</span>
               <span style={{ fontWeight: 400 }}>{pct}%</span>
             </div>
             <div role="progressbar" aria-label="Review progress" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100} style={{ height: 3, borderRadius: 2, background: "var(--line)", overflow: "hidden" }}>
@@ -305,7 +363,11 @@ export function GuidedReview(p: Props) {
                   </label>
                 </div>
                 <div className="selectable" style={{ maxWidth: 760, padding: "2px 0 10px" }}>
-                  <Markdown text={step.why} />
+                  {p.predict && step.probe && (
+                    <ProbeCard step={step} answer={p.answers?.[probeKey(step)]} agent={agent} onAnswer={(a) => p.onAnswer(probeKey(step), a)} onAsk={() => { if (si !== active) jumpTo(si); p.onAsk(); }} onOpenAnchor={p.onOpenAnchor} />
+                  )}
+                  {/* The explanation waits until the question is answered or skipped. */}
+                  {!(p.predict && step.probe && probeOutcome(step.probe, p.answers?.[probeKey(step)]) === "open") && <Markdown text={step.why} />}
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                   {step.parts.map((part, i) => (

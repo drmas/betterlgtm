@@ -554,3 +554,14 @@ button.link { padding: 0; color: var(--accent); text-decoration: underline; font
 .whats-new-body { padding: 14px 16px 6px; overflow-y: auto; min-height: 0; }
 .whats-new-lead { margin: 0 0 6px; font-size: 14px; }
 .whats-new-body .md h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin: 14px 0 6px; }
+
+/* Guided review's predict-first question: asked before the step's explanation, answered from the code. */
+.probe { display: flex; flex-direction: column; gap: 8px; margin: 2px 0 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--sunken); }
+.probe-q { font-weight: 600; }
+.probe-choices { display: flex; flex-wrap: wrap; gap: 6px; }
+.probe-choices .btn { height: auto; min-height: 28px; padding: 4px 10px; white-space: normal; text-align: left; }
+.probe-skip { align-self: flex-start; }
+.probe-right { border-color: color-mix(in srgb, var(--ok) 40%, transparent); background: var(--ok-bg); }
+.probe-wrong { border-color: color-mix(in srgb, var(--high) 40%, transparent); background: var(--high-bg); }
+.probe-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12px; }
+

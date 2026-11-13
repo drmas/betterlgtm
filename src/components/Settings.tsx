@@ -249,6 +249,7 @@ export function Settings(p: Props) {
                 <GeneratedPatterns value={s.generatedPatterns} onSave={(v) => p.update({ generatedPatterns: v })} />
               </div>
               <Check label="Hide test files" hint="Guided review leaves out tests and specs; the Files view folds them. The agent still reads them to check coverage" checked={s.hideTests} onChange={(v) => p.update({ hideTests: v })} />
+              <Check label="Ask me to predict before explaining (up to 2 per PR)" hint="Before explaining a risky part, guided review asks what you think happens, then shows the answer from the code. Off by default; questions come with the next guided review." checked={s.predictFirst} onChange={(v) => p.update({ predictFirst: v })} />
             </div>
           </>
         )}

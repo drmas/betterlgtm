@@ -63,6 +63,20 @@ export interface WalkStep {
   /** Markdown bullets: what changed and why. */
   why: string;
   changes: Anchor[];
+  /** Asked before `why` is shown, when the reviewer turned predict-first on. */
+  probe?: Probe;
+}
+
+/** A multiple-choice question about how the code behaves, answered from the code (not by running it). */
+export interface Probe {
+  question: string;
+  choices: string[];
+  /** Index of the right choice. */
+  answer: number;
+  /** One or two sentences: why that's what the code does. */
+  why: string;
+  /** The line that decides it. */
+  evidence?: Anchor;
 }
 
 export type Decision = "approve" | "comment" | "request_changes";
@@ -131,6 +145,21 @@ export const WALKTHROUGH_SCHEMA = {
   type: "object",
   properties: {
     walkthrough: { type: "array", items: { type: "object", properties: { title: TEXT, why: LINES, changes: ANCHORS }, required: ["title", "why", "changes"] } },
+  },
+  required: ["walkthrough"],
+};
+
+const PROBE = {
+  type: "object",
+  properties: { question: TEXT, choices: LINES, answer: { type: "integer" }, why: TEXT, evidence: ANCHORS.items },
+  required: ["question", "choices", "answer", "why"],
+};
+
+/** WALKTHROUGH_SCHEMA with the optional predict-first question on a step. */
+export const WALKTHROUGH_SCHEMA_PROBES = {
+  type: "object",
+  properties: {
+    walkthrough: { type: "array", items: { type: "object", properties: { title: TEXT, why: LINES, changes: ANCHORS, probe: PROBE }, required: ["title", "why", "changes"] } },
   },
   required: ["walkthrough"],
 };
@@ -210,8 +239,20 @@ export const VERIFY_SCHEMA = {
 };
 
 /** Asks the analysis session to group the PR's changes into guided review steps. */
-export function buildWalkthroughPrompt(generatedPatterns: string[] = []): string {
-  return `${WALKTHROUGH_RULES}${generatedNote(generatedPatterns)}
+export function buildWalkthroughPrompt(generatedPatterns: string[] = [], probes?: { avoid: string[] }): string {
+  const ask = probes
+    ? `
+
+The reviewer wants to predict before reading. On at most 2 steps that change behavior, add a "probe": a question about
+what the code does in one concrete case (an edge case or a failure, not trivia), to answer before reading the step.
+- "choices": 2–4 short answers, all plausible; put the right one at a random position. "answer" is its 0-based index.
+- "why": one or two sentences on why the code does that. "evidence": the line that decides it.
+- Ask only about behavior that none of these already describes, so the question doesn't repeat what the reviewer has read:
+${probes.avoid.length ? probes.avoid.map((x) => `  - ${oneLine(x, 120)}`).join("\n") : "  (nothing flagged)"}
+- Don't add "Not sure" or "None of the above" as a choice: the app adds "Not sure" itself.
+- Add no probe when no step qualifies. Shape: "probe": { "question": "...", "choices": ["...", "..."], "answer": 1, "why": "...", "evidence": { "path": "src/x.ts", "startLine": 12, "endLine": 12 } }`
+    : "";
+  return `${WALKTHROUGH_RULES}${generatedNote(generatedPatterns)}${ask}
 
 Use the PR you analyzed earlier in this session (git diff against the base branch).
 Give the result as one JSON object: { ${WALKTHROUGH_SHAPE} }`;
@@ -383,10 +424,30 @@ function asSeverity(v: unknown): Severity {
 }
 
 function parseSteps(v: unknown): WalkStep[] | undefined {
+  let probes = 0;
   const steps = asArray<WalkStep>(v)
     .filter((s) => s && typeof s.title === "string")
-    .map((s) => ({ title: s.title, why: asText(s.why), changes: asAnchors(s.changes) }));
+    .map((s) => {
+      const probe = probes < 2 ? asProbe(s.probe) : undefined;
+      if (probe) probes++;
+      return { title: s.title, why: asText(s.why), changes: asAnchors(s.changes), ...(probe ? { probe } : {}) };
+    });
   return steps.length ? steps : undefined;
+}
+
+/** A usable question, or nothing: 2–4 choices, a right answer among them, and a question. */
+function asProbe(v: unknown): Probe | undefined {
+  const p = v as Partial<Probe> | undefined;
+  if (!p || typeof p.question !== "string" || !p.question.trim()) return undefined;
+  // Any unusable choice drops the question: filtering it out would shift which index is right.
+  const raw = asArray<unknown>(p.choices);
+  const choices = raw.filter((c): c is string => typeof c === "string" && !!c.trim());
+  // Agents without a schema may give the index as text ("1").
+  const given: unknown = p.answer;
+  const answer = typeof given === "string" && given.trim() ? Number(given) : given;
+  if (choices.length !== raw.length || choices.length < 2 || choices.length > 4 || !Number.isInteger(answer) || (answer as number) < 0 || (answer as number) >= choices.length) return undefined;
+  const evidence = asAnchors([p.evidence])[0];
+  return { question: p.question, choices, answer: answer as number, why: asText(p.why), ...(evidence ? { evidence } : {}) };
 }
 
 /** What a run answered: the data when it was given a schema, otherwise its text. */
@@ -667,6 +728,32 @@ export interface FindingState {
   state: FindingStateKind;
   reason?: string;
   at: number;
+}
+
+/** What the reviewer did with a predict-first question. */
+export type ProbeAnswer = { choice: number | "unsure" | "skipped"; at: number };
+
+/** Keys an answer to the step, its question and its choices: the answer is an index, so new or reordered choices start unanswered. */
+export const probeKey = (s: WalkStep) => `${s.title}|${s.probe?.question ?? ""}|${s.probe?.choices.join("\u0001") ?? ""}`;
+
+export function probeOutcome(p: Probe, a?: ProbeAnswer): "open" | "right" | "wrong" | "unsure" | "skipped" {
+  if (!a) return "open";
+  if (a.choice === "unsure" || a.choice === "skipped") return a.choice;
+  return a.choice === p.answer ? "right" : "wrong";
+}
+
+/** The answers that still belong to a question in these steps; the rest are for questions that are gone. */
+export function keepAnswers(answers: Record<string, ProbeAnswer> | undefined, steps: WalkStep[]): Record<string, ProbeAnswer> | undefined {
+  if (!answers) return answers;
+  const live = new Set(steps.filter((s) => s.probe).map(probeKey));
+  return Object.fromEntries(Object.entries(answers).filter(([k]) => live.has(k)));
+}
+
+/** "Not sure" counts as answered: the reviewer took the question. */
+export function probeProgress(steps: WalkStep[], answers: Record<string, ProbeAnswer> | undefined): { answered: number; skipped: number; total: number } {
+  const asked = steps.filter((s) => s.probe);
+  const outcomes = asked.map((s) => probeOutcome(s.probe!, answers?.[probeKey(s)]));
+  return { answered: outcomes.filter((o) => o === "right" || o === "wrong" || o === "unsure").length, skipped: outcomes.filter((o) => o === "skipped").length, total: asked.length };
 }
 
 /** Identifies a finding across analysis runs: the id carried over from an earlier run, or its first file and its title. */

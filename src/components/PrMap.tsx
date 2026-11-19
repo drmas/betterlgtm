@@ -3,7 +3,7 @@ import "@xyflow/react/dist/base.css";
 import { Check, Code2, FileSymlink, FlaskConical, ListOrdered, Loader, Radar, Shield, Sparkles, X } from "lucide-react";
 import { memo, useEffect, useMemo, useState } from "react";
 import type { FileData } from "react-diff-view";
-import { SEVERITY_RANK, type ChangeMap, type Finding, type MapEdge, type Risk, type Severity, type WalkStep } from "../analysis";
+import { SEVERITY_RANK, worstCounted, type ChangeMap, type Finding, type MapEdge, type Risk, type Severity, type WalkStep } from "../analysis";
 import type { AffectedFile, BlastRadius } from "../api";
 import { allReviewed, filePath, fileStats, findFile, hiddenKind, hunkKey, type HideRules } from "../diffUtils";
 import { useAgent } from "../harness";
@@ -126,7 +126,7 @@ function describeFiles(p: Props, reach: Reach): { infos: FileInfo[]; edges: Show
   for (const info of byPath.values()) {
     info.steps.sort((a, b) => a - b);
     info.findings.sort((a, b) => SEVERITY_RANK[p.findings[a].severity] - SEVERITY_RANK[p.findings[b].severity]);
-    info.worst = info.findings.length ? p.findings[info.findings[0]].severity : undefined;
+    info.worst = worstCounted(p.findings, info.findings);
   }
   // An edge is drawn only when both ends are files on the map.
   const seen = new Set<string>();

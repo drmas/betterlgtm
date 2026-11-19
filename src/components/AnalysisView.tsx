@@ -6,7 +6,7 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import type { FileData } from "react-diff-view";
-import { anchorLabel, buildHandoffPrompt, type Analysis, type Anchor, type CheckStatus, type Decision, type FindingCheck, type FindingState } from "../analysis";
+import { anchorLabel, buildHandoffPrompt, isDisputed, outlineOrder, type Analysis, type Anchor, type CheckStatus, type Decision, type FindingCheck, type FindingState } from "../analysis";
 import { contextMenu, copyText } from "../contextMenu";
 import { errorText, type PrDetails, type ReviewThread } from "../api";
 import { categoryIcon, SEVERITY, VERDICT } from "../icons";
@@ -15,7 +15,7 @@ import { prRisk } from "../risk";
 import { MergeStatus } from "./MergeStatus";
 import { useElementWidth } from "../hooks";
 import { GithubHtml, Markdown } from "./Markdown";
-import { useAgent } from "../harness";
+import { HARNESSES, useAgent, type HarnessId } from "../harness";
 
 /** s0 = overview, d0 = PR description, c = claim, f = finding. */
 export type OutlineKey = `s${number}` | `d${number}` | `f${number}` | `c${number}` | `u${number}` | `t${number}`;
@@ -78,6 +78,15 @@ function CheckBadge({ check }: { check?: FindingCheck }) {
 
 const STATE_LABEL: Record<FindingState["state"], string> = { dismissed: "Dismissed", resolved: "Resolved", commented: "Commented" };
 const DISMISS_REASONS = ["Not a problem", "Won't fix", "Handled elsewhere"];
+
+/** "Double-checked" and so on, naming the checker when another agent did it. */
+function checkLabel(c: { status: string; by?: HarnessId }): string {
+  const who = c.by ? HARNESSES[c.by].short : null;
+  if (c.status === "confirmed") return who ? `Confirmed by ${who}` : "Double-checked";
+  if (c.status === "changed") return who ? `Corrected by ${who}` : "Corrected by double-check";
+  if (c.status === "disputed") return "Disputed";
+  return "Not confirmed";
+}
 
 function StateBadge({ state }: { state?: FindingState }) {
   if (!state) return null;
@@ -207,10 +216,11 @@ export function AnalysisView(p: Props) {
   const isDismissed = (i: number) => p.states?.[i]?.state === "dismissed";
   const live = a.findings.map((f, i) => ({ f, i })).filter(({ i }) => !isDismissed(i));
   const dismissed = a.findings.map((f, i) => ({ f, i })).filter(({ i }) => isDismissed(i));
-  const major = live.filter(({ f }) => f.severity === "critical" || f.severity === "high");
-  const minor = live.filter(({ f }) => f.severity === "medium" || f.severity === "low");
-  const crit = live.filter(({ f }) => f.severity === "critical").length;
-  const high = live.filter(({ f }) => f.severity === "high").length;
+  // Disputed findings go after the undisputed ones and don't count: two agents disagree on them.
+  const major = live.filter(({ f }) => f.severity === "critical" || f.severity === "high").sort(outlineOrder);
+  const minor = live.filter(({ f }) => f.severity === "medium" || f.severity === "low").sort(outlineOrder);
+  const crit = live.filter(({ f }) => f.severity === "critical" && !isDisputed(f)).length;
+  const high = live.filter(({ f }) => f.severity === "high" && !isDisputed(f)).length;
 
   /** Right-click actions for a finding in the outline. */
   const findingMenu = (k: OutlineKey) => {
@@ -227,10 +237,11 @@ export function AnalysisView(p: Props) {
       ...(p.ownPr ? [{ label: "Copy for agent", run: () => copyText(buildHandoffPrompt({ pr: p.pr, head: p.analysisHead, analysis: a, states: p.states, findings: [i], claims: false })) }] : []),
     ]);
   };
-  const Row = ({ k, sub, Icon, tone, text, meta, check, state }: { k: OutlineKey; sub?: boolean; Icon: LucideIcon; tone: string; text: string; meta?: string; check?: FindingCheck; state?: FindingState }) => (
+  const Row = ({ k, sub, Icon, tone, text, meta, check, state, disputed }: { k: OutlineKey; sub?: boolean; Icon: LucideIcon; tone: string; text: string; meta?: string; check?: FindingCheck; state?: FindingState; disputed?: boolean }) => (
     <button type="button" data-nav className={["row", sub && "sub", p.selected === k && "sel", (check?.status === "fixed" || state?.state === "resolved" || state?.state === "dismissed") && "fixed"].filter(Boolean).join(" ")} onClick={() => select(k)} onContextMenu={findingMenu(k)} title={text}>
       <Icon size={14} className={tone} />
       <span className="ellipsis" style={{ flex: 1 }}>{text}</span>
+      {disputed && !state && <span className="check-badge check-high">Disputed</span>}
       {state ? <StateBadge state={state} /> : <CheckBadge check={check} />}
       {meta && <span className="rm">{meta}</span>}
     </button>
@@ -278,12 +289,12 @@ export function AnalysisView(p: Props) {
 
         <Group title="Findings" meta={crit || high ? [crit && `${crit} critical`, high && `${high} high`].filter(Boolean).join(" · ") : `${a.findings.length}`} />
         {major.map(({ f, i }) => (
-          <Row key={i} k={`f${i}`} Icon={SEVERITY[f.severity].icon} tone={SEVERITY[f.severity].tone} text={f.title} meta={String(i + 1)} check={p.checks?.[i]} state={p.states?.[i]} />
+          <Row key={i} k={`f${i}`} Icon={SEVERITY[f.severity].icon} tone={SEVERITY[f.severity].tone} text={f.title} meta={String(i + 1)} check={p.checks?.[i]} state={p.states?.[i]} disputed={isDisputed(f)} />
         ))}
         {minor.length > 0 && (
           <Toggle open={showMinor} text={minor.length === 1 ? "1 medium or low finding" : `${minor.length} medium and low findings`} onClick={() => setShowMinor(!showMinor)} />
         )}
-        {showMinor && minor.map(({ f, i }) => <Row key={i} k={`f${i}`} sub Icon={SEVERITY[f.severity].icon} tone={SEVERITY[f.severity].tone} text={f.title} meta={String(i + 1)} check={p.checks?.[i]} state={p.states?.[i]} />)}
+        {showMinor && minor.map(({ f, i }) => <Row key={i} k={`f${i}`} sub Icon={SEVERITY[f.severity].icon} tone={SEVERITY[f.severity].tone} text={f.title} meta={String(i + 1)} check={p.checks?.[i]} state={p.states?.[i]} disputed={isDisputed(f)} />)}
         {dismissed.length > 0 && (
           <Toggle open={showDismissed} text={dismissed.length === 1 ? "1 dismissed finding" : `${dismissed.length} dismissed findings`} onClick={() => setShowDismissed(!showDismissed)} />
         )}
@@ -460,11 +471,13 @@ function Overview(p: Props & { analysis: Analysis }) {
   const settled = (i: number) => p.states?.[i]?.state === "dismissed" || p.states?.[i]?.state === "resolved";
   const major = a.findings
     .map((f, i) => ({ f, i }))
-    .filter(({ f, i }) => (f.severity === "critical" || f.severity === "high") && !settled(i));
-  const count = (s: string) => a.findings.filter((f) => f.severity === s).length;
+    .filter(({ f, i }) => (f.severity === "critical" || f.severity === "high") && !settled(i) && !isDisputed(f));
+  const count = (s: string) => a.findings.filter((f) => f.severity === s && !isDisputed(f)).length;
+  const disputed = a.findings.filter(isDisputed);
+  const disputedBy = disputed.find((f) => f.check?.by)?.check?.by;
   // A claim the analysis explained with a finding stops counting once that finding is settled.
   const openProblems = problems.filter(({ c }) => c.finding === undefined || !settled(c.finding));
-  const derived: Decision = major.length || openProblems.some(({ c }) => c.verdict !== "partial") ? "request_changes" : a.findings.length || problems.length ? "comment" : "approve";
+  const derived: Decision = major.length || openProblems.some(({ c }) => c.verdict !== "partial") ? "request_changes" : a.findings.some((f) => !isDisputed(f)) || problems.length ? "comment" : "approve";
   // The saved recommendation is from analysis time. Once its serious findings are settled, it no longer holds.
   const rec = a.recommendation?.decision === "request_changes" && derived !== "request_changes" ? undefined : a.recommendation;
   const decision = DECISION[rec?.decision ?? derived];
@@ -489,6 +502,11 @@ function Overview(p: Props & { analysis: Analysis }) {
         )}
       </section>
 
+      {a.verifyFailed && (
+        <p className="check-note check-high" style={{ margin: 0 }}>
+          <strong>Not double-checked: {HARNESSES[a.verifyFailed.by].short} couldn't run.</strong> {a.verifyFailed.error}
+        </p>
+      )}
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
         <span className="stat"><CircleCheck size={13} className={matching === a.claims.length ? "tone-ok" : "tone-high"} />{matching} of {a.claims.length} claims match the code</span>
         {(a.unmentioned ?? []).length > 0 && (
@@ -502,6 +520,7 @@ function Overview(p: Props & { analysis: Analysis }) {
           const sev = SEVERITY[s];
           return <span key={s} className="stat"><sev.icon size={13} className={sev.tone} />{n} {s}</span>;
         })}
+        {disputed.length > 0 && <span className="stat"><CircleSlash size={13} className="tone-high" />{disputed.length} disputed{disputedBy ? ` by ${HARNESSES[disputedBy].short}` : ""}</span>}
         {a.findings.length === 0 && <span className="stat"><CircleCheck size={13} className="tone-ok" />No findings</span>}
       </div>
       {a.dropped && a.dropped.length > 0 && (
@@ -642,16 +661,19 @@ function Detail(p: Props & { analysis: Analysis }) {
           </span>
           {f.notInDescription && <span className="tag"><FileX size={12} />Not in description</span>}
           {f.check && (
-            <span className={`check-badge ${f.check.status === "confirmed" ? "check-ok" : ""}`} title={f.check.note}>
-              {f.check.status === "confirmed" ? "Double-checked" : "Not confirmed"}
+            <span className={`check-badge ${f.check.status === "confirmed" ? "check-ok" : f.check.status === "disputed" ? "check-high" : ""}`} title={f.check.note}>
+              {checkLabel(f.check)}
             </span>
           )}
           <CheckBadge check={p.checks?.[idx]} />
           <StateBadge state={p.states?.[idx]} />
           <span style={{ flex: 1 }} />
-          <span className="muted" style={{ fontSize: 12 }}>Finding {idx + 1} of {a.findings.length}</span>
-          <button type="button" className="tb" aria-label="Previous finding" onClick={() => go(-1)}><ChevronUp size={16} /></button>
-          <button type="button" className="tb" aria-label="Next finding" onClick={() => go(1)}><ChevronDown size={16} /></button>
+          {/* One group, so a long header wraps as a whole instead of splitting the two arrows. */}
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 4, marginLeft: "auto" }}>
+            <span className="muted" style={{ fontSize: 12 }}>Finding {idx + 1} of {a.findings.length}</span>
+            <button type="button" className="tb" aria-label="Previous finding" onClick={() => go(-1)}><ChevronUp size={16} /></button>
+            <button type="button" className="tb" aria-label="Next finding" onClick={() => go(1)}><ChevronDown size={16} /></button>
+          </span>
         </div>
         {p.checks?.[idx] && (
           <p className={`check-note check-${CHECK[p.checks[idx].status].tone}`}>
@@ -661,6 +683,11 @@ function Detail(p: Props & { analysis: Analysis }) {
         {f.check?.status === "uncertain" && (
           <p className="check-note check-muted">
             <strong>A second pass couldn't confirm this:</strong> {f.check.note || "the code didn't settle it either way."}
+          </p>
+        )}
+        {f.check?.status === "disputed" && (
+          <p className="check-note check-high">
+            <strong>{f.check.by ? HARNESSES[f.check.by].short : "The double-check"} disagrees with this finding:</strong> {f.check.note || "it found no support in the code."} You decide: it isn't counted or ticked for posting until you do.
           </p>
         )}
         <h2 style={{ margin: 0, fontSize: 18, fontWeight: 600, lineHeight: 1.35 }}>{f.title}</h2>
@@ -734,7 +761,7 @@ function Detail(p: Props & { analysis: Analysis }) {
           {c.source && <span className="tag">From issue {c.source}</span>}
           {c.check && (
             <span className={`check-badge ${c.check.status === "confirmed" ? "check-ok" : ""}`} title={c.check.note}>
-              {c.check.status === "confirmed" ? "Double-checked" : c.check.status === "changed" ? "Corrected by double-check" : "Not confirmed"}
+              {checkLabel(c.check)}
             </span>
           )}
           <span style={{ flex: 1 }} />
@@ -766,7 +793,7 @@ function Detail(p: Props & { analysis: Analysis }) {
             <button key={j} type="button" className="flink" title={an.path} onClick={() => p.onOpenAnchor(an, null)}>{anchorLabel(an)}</button>
           ))}
           {fi !== undefined && a.findings[fi] && (
-            <button type="button" className="btn sm" onClick={() => p.onSelect(`f${fi}`)}><Flag size={13} />See finding {fi + 1}</button>
+            <button type="button" className="btn sm" onClick={() => p.onSelect(`f${fi}`)}><Flag size={13} />See finding {fi + 1}{isDisputed(a.findings[fi]) ? " (disputed)" : ""}</button>
           )}
           <button type="button" className="btn sm" onClick={() => p.onSelect("d0")}><FileText size={13} />Read the full description</button>
         </div>

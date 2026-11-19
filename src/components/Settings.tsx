@@ -76,6 +76,29 @@ function TextSetting({ value, placeholder, onSave, mono }: { value: string; plac
   );
 }
 
+/** Which agent double-checks: the reviewing agent, or another installed one. Names where the code goes and the agent's limits. */
+function VerifyWith(p: Props) {
+  const s = p.settings;
+  const main = harnessOf(s);
+  const [installed, setInstalled] = useState<HarnessId[] | null>(null);
+  useEffect(() => {
+    api.toolStatus().then((t) => setInstalled((t.agents ?? []).filter((a) => a.file).map((a) => a.id as HarnessId))).catch(() => setInstalled([]));
+  }, []);
+  const others = HARNESS_IDS.filter((id) => id !== main.id && (installed?.includes(id) || id === s.verifyWith));
+  const other = s.verifyWith !== "same" && s.verifyWith !== main.id ? HARNESSES[s.verifyWith] : null;
+  return (
+    <Row
+      label="Double-check with"
+      hint={other ? <>{other.maker !== main.maker && <>Findings and code are also sent to {other.maker} ({other.name}). </>}{other.limits}</> : "The agent that ran the review checks its own findings"}
+    >
+      <select className="set-input" aria-label="Double-check with" value={other ? other.id : "same"} onChange={(e) => p.update({ verifyWith: e.target.value as HarnessId | "same" })}>
+        <option value="same">Same agent</option>
+        {others.map((id) => <option key={id} value={id}>{HARNESSES[id].name}</option>)}
+      </select>
+    </Row>
+  );
+}
+
 function Organizations(p: Props) {
   const s = p.settings;
   const counts = new Map<string, number>();
@@ -296,6 +319,7 @@ export function Settings(p: Props) {
                 checked={s.verifyFindings}
                 onChange={(v) => p.update({ verifyFindings: v })}
               />
+              {s.verifyFindings && <VerifyWith {...p} />}
             </div>
             <div className="set-group">
               <div className="set-title">Auto-analyze</div>

@@ -2,7 +2,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { Check, ClipboardCopy, ExternalLink, Loader, MessageSquare, Send, Sparkles, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { FileData } from "react-diff-view";
-import { anchorLabel, buildHandoffPrompt, type Analysis, type Finding, type FindingCheck, type FindingState } from "../analysis";
+import { anchorLabel, buildHandoffPrompt, startsTicked, type Analysis, type Finding, type FindingCheck, type FindingState } from "../analysis";
 import { copyText } from "../contextMenu";
 import { api, errorText, type PrDetails, type ReviewEvent } from "../api";
 import { commentLines } from "../diffUtils";
@@ -70,7 +70,7 @@ export function SubmitReview(p: Props) {
     findings.map((finding, index) => ({
       index,
       finding,
-      checked: p.checks?.[index]?.status !== "fixed" && !p.states?.[index] && (p.inReview.length ? p.inReview.includes(index) : finding.severity === "critical" || finding.severity === "high"),
+      checked: startsTicked(finding, { fixed: p.checks?.[index]?.status === "fixed", hasState: !!p.states?.[index], inReview: p.inReview, index }),
       text: commentText(finding),
       where: finding.anchors.map((a) => commentLines(p.files, a)).find(Boolean) ?? null,
       suggest: false,

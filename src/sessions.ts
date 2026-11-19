@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { inTauri } from "./mock";
-import type { Analysis, FindingChecks, FindingState } from "./analysis";
+import type { Analysis, FindingChecks, FindingState, ProbeAnswer } from "./analysis";
 import type { DraftComment } from "./components/DiffView";
 
 export interface ChatItem {
@@ -22,6 +22,8 @@ export interface PrSession {
   analysisSince?: string;
   /** The PR head the analysis looked at. */
   analysisHead?: string;
+  /** Answers to guided review's predict-first questions, by `probeKey`. */
+  probeAnswers?: Record<string, ProbeAnswer>;
   /** Findings re-checked after new commits. */
   findingChecks?: FindingChecks;
   /** Dismissed, resolved or commented findings, keyed by `findingId`. */

@@ -57,6 +57,8 @@ export interface Settings {
   autoAnalyzeBudgetUsd: number;
   /** A second pass tries to disprove the findings and drops the ones the code doesn't support. */
   verifyFindings: boolean;
+  /** Guided review asks what you think a risky part does before explaining it (up to 2 per PR). */
+  predictFirst: boolean;
   /** The first-run choices were made, or skipped. */
   onboarded: boolean;
   // Tools and storage
@@ -100,6 +102,7 @@ export const DEFAULT_SETTINGS: Settings = {
   autoAnalyzeLimit: 1,
   autoAnalyzeBudgetUsd: 5,
   verifyFindings: true,
+  predictFirst: false,
   onboarded: false,
   ghPath: "gh",
   claudePath: "claude",

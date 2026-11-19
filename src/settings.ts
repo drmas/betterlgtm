@@ -57,6 +57,8 @@ export interface Settings {
   autoAnalyzeBudgetUsd: number;
   /** A second pass tries to disprove the findings and drops the ones the code doesn't support. */
   verifyFindings: boolean;
+  /** Which agent runs that second pass: the one running the review, or another installed agent. */
+  verifyWith: HarnessId | "same";
   /** The first-run choices were made, or skipped. */
   onboarded: boolean;
   // Tools and storage
@@ -100,6 +102,7 @@ export const DEFAULT_SETTINGS: Settings = {
   autoAnalyzeLimit: 1,
   autoAnalyzeBudgetUsd: 5,
   verifyFindings: true,
+  verifyWith: "same",
   onboarded: false,
   ghPath: "gh",
   claudePath: "claude",

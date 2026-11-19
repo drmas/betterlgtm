@@ -58,6 +58,19 @@ pub struct Run<'a> {
     /// from the prompt, and the frontend reads the JSON out of their text.
     pub schema: Option<&'a str>,
     pub max_budget_usd: Option<f64>,
+    /// The same schema written to a file, for Codex's --output-schema. Set only when Codex double-checks
+    /// for another agent, so Codex's own reviews behave as before.
+    pub schema_file: Option<&'a std::path::Path>,
+}
+
+/// The agent for one run: the configured one, or a different agent asked for just this run (such as a
+/// double-check by another agent). The flag says the override is in effect.
+pub fn run_agent(configured: &str, override_id: Option<&str>) -> (Harness, bool) {
+    let base = Harness::from_id(configured);
+    match override_id.map(Harness::from_id) {
+        Some(h) if h != base => (h, true),
+        _ => (base, false),
+    }
 }
 
 impl Harness {
@@ -157,6 +170,9 @@ impl Harness {
                 // The sandbox is what makes the run read-only: commands can read the worktree and nothing can write.
                 // Set as config because `exec resume` has no --sandbox option.
                 cmd.args(["--json", "--skip-git-repo-check", "-c", "sandbox_mode=\"read-only\""]);
+                if let Some(file) = run.schema_file {
+                    cmd.arg("--output-schema").arg(file);
+                }
                 if !model.is_empty() {
                     cmd.args(["--model", model]);
                 }
@@ -543,7 +559,7 @@ mod tests {
     fn copilot_run_cannot_be_widened_from_the_environment() {
         let mut cmd = Command::new("copilot");
         cmd.env("COPILOT_ALLOW_ALL", "true");
-        Harness::Copilot.arguments(&mut cmd, &Run { prompt: "p", model: "", effort: "", resume: None, chat: false, schema: None, max_budget_usd: None });
+        Harness::Copilot.arguments(&mut cmd, &Run { prompt: "p", model: "", effort: "", resume: None, chat: false, schema: None, max_budget_usd: None, schema_file: None });
         let removed: Vec<_> = cmd.as_std().get_envs().filter(|(_, v)| v.is_none()).map(|(k, _)| k.to_string_lossy().into_owned()).collect();
         assert!(removed.contains(&"COPILOT_ALLOW_ALL".to_string()));
         assert!(removed.contains(&"COPILOT_ASSISTED_APPROVAL".to_string()));
@@ -579,5 +595,38 @@ mod tests {
     fn shell_wrapper_is_removed() {
         assert_eq!(shell_command("/usr/bin/bash -lc 'git diff a...b'"), "git diff a...b");
         assert_eq!(shell_command("git status"), "git status");
+    }
+
+    #[test]
+    fn run_agent_uses_the_configured_agent_without_an_override() {
+        assert_eq!(run_agent("claude", None), (Harness::Claude, false));
+    }
+
+    #[test]
+    fn run_agent_takes_a_different_override() {
+        assert_eq!(run_agent("claude", Some("codex")), (Harness::Codex, true));
+    }
+
+    #[test]
+    fn run_agent_ignores_an_override_that_matches_the_configured_agent() {
+        assert_eq!(run_agent("codex", Some("codex")), (Harness::Codex, false));
+    }
+
+    fn codex_args(schema_file: Option<&std::path::Path>) -> Vec<String> {
+        let mut cmd = Command::new("codex");
+        Harness::Codex.arguments(&mut cmd, &Run { prompt: "p", model: "", effort: "", resume: None, chat: false, schema: None, max_budget_usd: None, schema_file });
+        cmd.as_std().get_args().map(|a| a.to_string_lossy().into_owned()).collect()
+    }
+
+    #[test]
+    fn codex_gets_output_schema_when_a_schema_file_is_given() {
+        let args = codex_args(Some(std::path::Path::new("/tmp/s.json")));
+        let at = args.iter().position(|a| a == "--output-schema").expect("--output-schema missing");
+        assert_eq!(args[at + 1], "/tmp/s.json");
+    }
+
+    #[test]
+    fn codex_has_no_output_schema_without_a_schema_file() {
+        assert!(!codex_args(None).iter().any(|a| a == "--output-schema"));
     }
 }
